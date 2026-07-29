@@ -1,6 +1,6 @@
-# KimiStyle MathSolver
+# Orchestrator-Guided AI Math Solver
 
-A local agentic math harness inspired by Kimi K2.5 Agent Swarm, but with each worker implemented as a `codex exec` terminal call instead of a Kimi model call.
+A local agentic math harness where an orchestrator agent receives open-ended instructions and coordinates specialized subagents. Each worker is implemented as a `codex exec` terminal call rather than a direct model API call.
 
 The orchestrator is **self-directed**: instead of a hard-coded pipeline, an `orchestrator` agent decides the workflow at runtime. Each step it can:
 
@@ -220,6 +220,6 @@ python3 -m unittest discover -s tests
 
 The tests use the mock backend and command-construction checks only; they do not call Codex.
 
-## Notes On The Inspiration
+## Inspiration
 
-Kimi K2.5's report describes Agent Swarm as a framework where an orchestrator decomposes complex tasks into heterogeneous subtasks and runs subagents concurrently. This repo implements that system idea locally with Codex CLI processes as the subagents.
+This harness is inspired by Kimi K2.5 Agent Swarm and other agentic harnesses that give an orchestrator agent open-ended control over many subagents instead of forcing a fixed pipeline. In those systems, the orchestrator decomposes complex tasks into heterogeneous subtasks, decides which tools and workers to invoke, and runs subagents concurrently. This repo implements that pattern locally, with Codex CLI processes as the subagents.
