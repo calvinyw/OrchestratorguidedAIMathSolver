@@ -1,0 +1,18 @@
+[project]
+name = "kimi-style-math-solver"
+version = "0.1.0"
+description = "A Kimi Agent Swarm inspired math harness backed by Codex CLI workers."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+swarm-solve = "swarm_harness.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "title", "approach", "latex_document", "confidence", "assumptions"],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "approach": {
+      "type": "string"
+    },
+    "latex_document": {
+      "type": "string",
+      "description": "A self-contained LaTeX document that proves the original problem statement."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

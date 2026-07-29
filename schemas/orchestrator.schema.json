@@ -1,0 +1,159 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["thought", "actions"],
+  "properties": {
+    "thought": {
+      "type": "string"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "name",
+          "system_prompt",
+          "agent",
+          "task_id",
+          "graph_id",
+          "node_id",
+          "statement",
+          "proof",
+          "term",
+          "mode",
+          "project_dir",
+          "source_path",
+          "destination",
+          "wait",
+          "prompt",
+          "query",
+          "url",
+          "instruction",
+          "language",
+          "answer",
+          "confidence",
+          "reasoning_summary",
+          "model",
+          "reasoning_effort",
+          "caveats",
+          "sources"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "create_subagent",
+              "assign_task",
+              "proof_writer",
+              "final_proof_writer",
+              "Graph_builder",
+              "lemma_prover",
+              "summarizer",
+              "critiquer",
+              "final_critiquer",
+              "term_definer",
+              "counterexample_finder",
+              "Aristotle_advisor",
+              "search",
+              "browse",
+              "code",
+              "aristotle",
+              "finish"
+            ]
+          },
+          "name": {
+            "type": ["string", "null"]
+          },
+          "system_prompt": {
+            "type": ["string", "null"]
+          },
+          "agent": {
+            "type": ["string", "null"]
+          },
+          "task_id": {
+            "type": ["string", "null"]
+          },
+          "graph_id": {
+            "type": ["string", "null"]
+          },
+          "node_id": {
+            "type": ["string", "null"]
+          },
+          "statement": {
+            "type": ["string", "null"]
+          },
+          "proof": {
+            "type": ["string", "null"]
+          },
+          "term": {
+            "type": ["string", "null"]
+          },
+          "mode": {
+            "type": ["string", "null"],
+            "enum": ["submit", "formalize", null]
+          },
+          "project_dir": {
+            "type": ["string", "null"]
+          },
+          "source_path": {
+            "type": ["string", "null"]
+          },
+          "destination": {
+            "type": ["string", "null"]
+          },
+          "wait": {
+            "type": ["boolean", "null"]
+          },
+          "prompt": {
+            "type": ["string", "null"]
+          },
+          "query": {
+            "type": ["string", "null"]
+          },
+          "url": {
+            "type": ["string", "null"]
+          },
+          "instruction": {
+            "type": ["string", "null"]
+          },
+          "language": {
+            "type": ["string", "null"],
+            "enum": ["python", "sage", "macaulay2", null]
+          },
+          "answer": {
+            "type": ["string", "null"]
+          },
+          "confidence": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "reasoning_summary": {
+            "type": ["string", "null"]
+          },
+          "model": {
+            "type": ["string", "null"]
+          },
+          "reasoning_effort": {
+            "type": ["string", "null"],
+            "enum": ["low", "medium", "high", "xhigh", "max", "ultra", null]
+          },
+          "caveats": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          },
+          "sources": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

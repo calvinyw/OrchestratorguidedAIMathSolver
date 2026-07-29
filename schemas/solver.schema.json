@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "title", "approach", "answer_fragment", "confidence", "assumptions"],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "approach": {
+      "type": "string"
+    },
+    "answer_fragment": {
+      "type": "string",
+      "description": "The proof body in LaTeX (e.g. \\begin{proof}...\\end{proof} or an amsthm-style proof environment)."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+

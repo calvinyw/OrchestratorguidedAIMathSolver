@@ -1,0 +1,73 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["thought", "actions"],
+  "properties": {
+    "thought": {
+      "type": "string"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "query",
+          "url",
+          "instruction",
+          "language",
+          "task_id",
+          "title",
+          "approach",
+          "answer_fragment",
+          "confidence",
+          "assumptions"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["search", "browse", "code", "finish"]
+          },
+          "query": {
+            "type": ["string", "null"]
+          },
+          "url": {
+            "type": ["string", "null"]
+          },
+          "instruction": {
+            "type": ["string", "null"]
+          },
+          "language": {
+            "type": ["string", "null"],
+            "enum": ["python", "sage", "macaulay2", null]
+          },
+          "task_id": {
+            "type": ["string", "null"]
+          },
+          "title": {
+            "type": ["string", "null"]
+          },
+          "approach": {
+            "type": ["string", "null"]
+          },
+          "answer_fragment": {
+            "type": ["string", "null"],
+            "description": "The proof body in LaTeX (e.g. \\begin{proof}...\\end{proof})."
+          },
+          "confidence": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "assumptions": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

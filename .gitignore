@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+outputs/*
+!outputs/workflow_runs/
+outputs/workflow_runs/*
+!outputs/workflow_runs/cross_ratio_degree_one_conjecture-5719e2a9/
+input txts/*
+!input txts/cross_ratio_degree_one_conjecture_prompt.txt
+!outputs/workflow_runs_5.6/
+outputs/workflow_runs_5.6/*
+!outputs/workflow_runs_5.6/workflow_runs/
+outputs/workflow_runs_5.6/workflow_runs/*
+!outputs/workflow_runs_5.6/workflow_runs/conjecture_8_7-7dd82763/
+!outputs/workflow_runs_5.6/workflow_runs/conjecture_8_7_quiver-3fe61e9b/
+
+!input txts/conjecture_8_7.txt
+!input txts/conjecture_8_7_for_quiver_research_prompt.txt
+smoke/output*/
+.DS_Store
+

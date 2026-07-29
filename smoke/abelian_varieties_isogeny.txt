@@ -1,0 +1,1 @@
+Show that if two abelian varieties A1 and A2, both defined over Z[1/N] have the same Frobenius/Tate-module for all but finitely many primes q (i.e. A1(\mathbb{F}_q and A2(\mathbb{F}_q) are isomorphic for all but finitely many q's) then A1 and A2 are isogenous.

@@ -1,0 +1,13 @@
+{
+  "problems": [
+    {
+      "id": "sqrt2",
+      "latex": "Prove that \\sqrt{2} is irrational."
+    },
+    {
+      "id": "infinitely-many-primes",
+      "latex": "Prove that there are infinitely many primes."
+    }
+  ]
+}
+

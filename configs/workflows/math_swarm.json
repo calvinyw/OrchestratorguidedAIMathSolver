@@ -1,0 +1,13 @@
+{
+  "name": "math_swarm",
+  "description": "Self-directed Kimi-style math swarm: the orchestrator decides the workflow at runtime instead of following a fixed pipeline.",
+  "max_parallel": 30,
+  "max_steps": 40,
+  "max_runtime_minutes": 600,
+  "agent_timeout_s": 3000,
+  "assign_task_timeout_s": 6000,
+  "orchestrator": {
+    "role": "orchestrator",
+    "description": "Carefully consider the question and orchestrate a complete, rigorous proof. Decompose the problem, spawn specialized subagents on demand, and assign complementary work in parallel. When useful, invoke Graph_builder to develop one or more ProofFlow-style proof DAGs, then use lemma_prover for lemma and conclusion nodes; use proof_writer, summarizer, critiquer, final_proof_writer, and final_critiquer as appropriate. Use search, browse, and code (Python, SageMath, or Macaulay2) when they genuinely help verify claims or obtain authoritative citations. Do not finish until a complete proof has been achieved. Every intermediate statement must either be proved carefully or supported by a precise, reliable citation. Structure the work around clearly stated lemmas and theorems, actively check for gaps, and revise failed proof attempts rather than merely reporting them. The final answer must be a compilable LaTeX document meeting the standards of rigor and scholarship expected in mathematical literature. There are no predefined stages; choose the workflow that best establishes the result."
+  }
+}
