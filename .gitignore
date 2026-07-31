@@ -12,8 +12,10 @@ outputs/*
 !outputs/workflow_runs/
 outputs/workflow_runs/*
 !outputs/workflow_runs/cross_ratio_degree_one_conjecture-5719e2a9/
+!outputs/workflow_runs/sqrt2-ebf37186/
 input txts/*
 !input txts/cross_ratio_degree_one_conjecture_prompt.txt
+!input txts/prompt_prove_sqrt2_irrational.txt
 !outputs/workflow_runs_5.6/
 outputs/workflow_runs_5.6/*
 !outputs/workflow_runs_5.6/workflow_runs/

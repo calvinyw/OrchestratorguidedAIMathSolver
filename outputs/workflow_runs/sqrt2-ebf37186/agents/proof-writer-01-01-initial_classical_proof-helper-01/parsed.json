@@ -1,0 +1,20 @@
+{
+  "thought": "Use contradiction with a coprime integer representation, after normalizing the denominator to be positive, and prove the needed parity lemma by contraposition.",
+  "actions": [
+    {
+      "type": "finish",
+      "query": null,
+      "url": null,
+      "instruction": null,
+      "language": null,
+      "task_id": "initial_classical_proof",
+      "title": "Irrationality of \\(\\sqrt{2}\\)",
+      "approach": "Classical contradiction using a lowest-terms rational representation and parity.",
+      "answer_fragment": "\\begin{theorem}\nThe positive real number \\(\\sqrt{2}\\) is irrational. Equivalently, there do not exist integers \\(p,q\\) with \\(q\\ne 0\\) such that\n\\[\n\\sqrt{2}=\\frac{p}{q}.\n\\]\n\\end{theorem}\n\n\\begin{proof}\nSuppose, for contradiction, that \\(\\sqrt{2}\\) is rational. Then there exist integers \\(p,q\\) with \\(q\\ne 0\\) such that\n\\[\n\\sqrt{2}=\\frac{p}{q}.\n\\]\nIf \\(q<0\\), replace both \\(p\\) and \\(q\\) by \\(-p\\) and \\(-q\\), respectively. We may therefore assume that \\(q>0\\). Dividing \\(p\\) and \\(q\\) by their greatest common divisor, we may further assume that the fraction is in lowest terms, so\n\\[\n\\gcd(p,q)=1.\n\\]\n\nWe first record the parity fact that if the square of an integer is even, then the integer itself is even. Indeed, let \\(n\\in\\mathbb Z\\). If \\(n\\) were odd, then \\(n=2k+1\\) for some \\(k\\in\\mathbb Z\\), and hence\n\\[\nn^2=(2k+1)^2=4k^2+4k+1=2(2k^2+2k)+1,\n\\]\nwhich is odd. Thus an integer whose square is even cannot be odd, and therefore must be even.\n\nSquaring \\(\\sqrt{2}=p/q\\) and multiplying by \\(q^2\\) gives\n\\[\n2q^2=p^2.\n\\]\nThus \\(p^2\\) is even. By the parity fact just proved, \\(p\\) is even, so there exists an integer \\(r\\) such that \\(p=2r\\). Substituting this into the preceding equation yields\n\\[\n2q^2=(2r)^2=4r^2.\n\\]\nDividing by \\(2\\), we obtain\n\\[\nq^2=2r^2.\n\\]\nTherefore \\(q^2\\) is even, and the same parity fact implies that \\(q\\) is even.\n\nConsequently, both \\(p\\) and \\(q\\) are divisible by \\(2\\). Hence \\(2\\) is a common positive divisor of \\(p\\) and \\(q\\), so \\(\\gcd(p,q)\\ge 2\\). This contradicts the assumption that \\(\\gcd(p,q)=1\\). Therefore no integers \\(p,q\\) with \\(q\\ne 0\\) satisfy \\(\\sqrt{2}=p/q\\), and thus \\(\\sqrt{2}\\) is irrational.\n\\end{proof}",
+      "confidence": 0.99,
+      "assumptions": [
+        "Standard facts that every rational number admits a lowest-terms integer representation and that every integer is either even or odd."
+      ]
+    }
+  ]
+}

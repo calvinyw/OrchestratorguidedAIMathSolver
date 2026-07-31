@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "call_id": "tex-writer-001",
+  "fallback_used": false,
+  "fallback_reason": null,
+  "confidence": 0.99,
+  "notes": [
+    "The supplied proof was preserved and polished into a complete, self-contained LaTeX article."
+  ],
+  "tex_path": "outputs/workflow_runs/sqrt2-ebf37186/solution.tex",
+  "error": null
+}

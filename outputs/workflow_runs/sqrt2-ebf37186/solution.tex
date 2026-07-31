@@ -1,0 +1,88 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=1in]{geometry}
+
+\newtheorem*{theorem}{Theorem}
+
+\title{The Irrationality of $\sqrt{2}$}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{Question}
+Prove that $\sqrt{2}$ is irrational. In other words, prove that there do not exist integers $p$ and $q$, with $q\ne 0$, such that
+\[
+\sqrt{2}=\frac{p}{q}.
+\]
+Equivalently, prove that $2$ is not a perfect square in $\mathbb{Q}$, or that the polynomial $x^2-2$ has no rational root.
+
+\section*{Solution}
+
+\begin{theorem}
+The real number $\sqrt{2}$ is irrational. Equivalently, no integers $p,q$ with $q\ne 0$ satisfy $\sqrt{2}=p/q$.
+\end{theorem}
+
+\begin{proof}
+Suppose, for contradiction, that $\sqrt{2}$ is rational. Then there exist integers $a,b$ with $b\ne 0$ such that
+\[
+\sqrt{2}=\frac{a}{b}.
+\]
+Replacing both $a$ and $b$ by their negatives if necessary, we may assume that $b>0$. Let
+\[
+d=\gcd(|a|,b).
+\]
+Since $d$ divides both $a$ and $b$, the numbers
+\[
+p=\frac{a}{d}
+\qquad\text{and}\qquad
+q=\frac{b}{d}
+\]
+are integers. Moreover, $q>0$ and
+\[
+\sqrt{2}=\frac{p}{q}.
+\]
+This representation is in lowest terms. Indeed, if a positive integer $c$ divided both $p$ and $q$, then $cd$ would divide both $a=dp$ and $b=dq$. Since $d$ is their greatest positive common divisor, we would have $cd\le d$, and hence $c\le 1$. Thus $c=1$, so
+\[
+\gcd(|p|,q)=1.
+\]
+
+We first prove the parity fact that if the square of an integer is even, then the integer itself is even. Let $n\in\mathbb{Z}$. If $n$ were odd, then $n=2k+1$ for some $k\in\mathbb{Z}$, and therefore
+\[
+n^2=(2k+1)^2=4k^2+4k+1=2(2k^2+2k)+1,
+\]
+which is odd. Consequently, an integer whose square is even cannot be odd and must therefore be even.
+
+Squaring the equality $\sqrt{2}=p/q$ gives
+\[
+2=\frac{p^2}{q^2}.
+\]
+Because $q\ne 0$, we may multiply by $q^2$ to obtain
+\[
+p^2=2q^2.
+\]
+Thus $p^2$ is even. By the parity fact just proved, $p$ is even, so $p=2r$ for some $r\in\mathbb{Z}$. Substituting this into $p^2=2q^2$ yields
+\[
+(2r)^2=2q^2,
+\]
+and hence
+\[
+4r^2=2q^2.
+\]
+Dividing by $2$ gives
+\[
+q^2=2r^2.
+\]
+Therefore $q^2$ is even, so the same parity fact shows that $q$ is even.
+
+Hence $2$ divides both $p$ and $q$. Thus $2$ is a positive common divisor of $|p|$ and $q$, which implies
+\[
+\gcd(|p|,q)\ge 2.
+\]
+This contradicts the lowest-terms condition $\gcd(|p|,q)=1$. Therefore no integers $p,q$ with $q\ne 0$ satisfy $\sqrt{2}=p/q$, and consequently $\sqrt{2}$ is irrational.
+\end{proof}
+
+\end{document}
