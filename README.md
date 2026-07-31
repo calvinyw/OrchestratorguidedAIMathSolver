@@ -85,15 +85,14 @@ working directory. Snippets themselves are still saved under the run artifacts.
 python3 scripts/run_swarm.py solve \
   --backend codex \
   --problem-id cerberus-recursions \
-  --problem-file "input txts/cerberus_recurrence_proof.txt" \
-  --codebase "/Users/calvinyost-wolff/Documents/GitHub/cross-ratio-degrees" \
+  --problem-file path/to/problem.txt \
+  --codebase path/to/repository \
   --codex-sandbox workspace-write
 ```
 
 `workspace-write` is recommended: it lets workers create temporary search scripts while retaining
-the normal sandbox. The default codebase is
-`/Users/calvinyost-wolff/Documents/GitHub/cross-ratio-degrees` (override it with `--codebase` or
-`CODEX_SWARM_CODEBASE`). Treat `--codebase` as a trusted repository, because Codex's `--add-dir`
+the normal sandbox. Set the codebase with `--codebase` or `CODEX_SWARM_CODEBASE`. Treat `--codebase`
+as a trusted repository, because Codex's `--add-dir`
 grants workers write access to that directory. Workers are explicitly allowed to edit it when this
 helps construct a counterexample search; use a clone if you want an extra safety boundary.
 

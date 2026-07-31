@@ -23,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WORKFLOW = REPO_ROOT / "configs" / "workflows" / "math_swarm.json"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "medium"
-DEFAULT_CODEBASE = Path("/Users/calvinyost-wolff/Documents/GitHub/cross-ratio-degrees")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,7 +122,7 @@ def add_common_args(parser: argparse.ArgumentParser, *, include_output: bool) ->
     parser.add_argument(
         "--codebase",
         type=Path,
-        default=Path(os.environ.get("CODEX_SWARM_CODEBASE") or DEFAULT_CODEBASE),
+        default=_default_codebase_from_env(),
         help="Optional local repository available to agents and used as the working directory for code checks.",
     )
     parser.add_argument(
@@ -261,6 +260,11 @@ def _capacity_fallback_models(args: argparse.Namespace) -> tuple[str, ...]:
     if env_value is not None:
         return tuple(part.strip() for part in env_value.split(",") if part.strip())
     return DEFAULT_CAPACITY_FALLBACK_MODELS
+
+
+def _default_codebase_from_env() -> Path | None:
+    value = (os.environ.get("CODEX_SWARM_CODEBASE") or "").strip()
+    return Path(value) if value else None
 
 
 def _resolve_codebase(path: Path | None) -> Path | None:
