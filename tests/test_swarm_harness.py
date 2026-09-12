@@ -20,7 +20,9 @@ from swarm_harness.codex_cli import (  # noqa: E402
     extract_capacity_error,
     parse_codex_jsonl,
 )
-from swarm_harness.cli import build_parser, run_solve, _capacity_fallback_models  # noqa: E402
+from swarm_harness.cli import build_parser, build_backend, run_solve, _capacity_fallback_models  # noqa: E402
+from swarm_harness.claude_cli import ClaudeCLIBackend, ClaudeCLIConfig, parse_claude_json  # noqa: E402
+from swarm_harness.routing import ModelRoutingBackend  # noqa: E402
 from swarm_harness.harness_io import read_problems, write_batch_outputs  # noqa: E402
 from swarm_harness.orchestrator import (  # noqa: E402
     SwarmOrchestrator,
@@ -33,6 +35,7 @@ from swarm_harness.subagents import SubagentRegistry  # noqa: E402
 from swarm_harness.tools import OrchestratorTools, _real_code  # noqa: E402
 from swarm_harness.records import AgentCallResult, Problem  # noqa: E402
 from swarm_harness.prompts import extract_graph_builder_output  # noqa: E402
+from swarm_harness.shared_storage import GlobalFactGraph  # noqa: E402
 from swarm_harness.util import read_json, write_json  # noqa: E402
 
 
@@ -120,7 +123,7 @@ class CodexCLITests(unittest.TestCase):
     def test_run_agent_retries_capacity_error_with_fallback_model(self) -> None:
         backend = CodexCLIBackend(
             CodexCLIConfig(
-                model="gpt-5.6-sol",
+                model="gpt-6-astra",
                 capacity_fallback_models=("gpt-5.4",),
             )
         )
@@ -132,12 +135,12 @@ class CodexCLITests(unittest.TestCase):
             async def fake_run_once(**kwargs):
                 attempts.append(kwargs.get("model"))
                 model = kwargs.get("model")
-                if model == "gpt-5.6-sol":
+                if model == "gpt-6-astra":
                     return AgentCallResult(
                         role="custom",
                         call_id="capacity-test",
                         workspace=workspace,
-                        command=["codex", "-m", "gpt-5.6-sol"],
+                        command=["codex", "-m", "gpt-6-astra"],
                         prompt="Prove it.",
                         content=CAPACITY_STDOUT,
                         parsed=None,
@@ -170,30 +173,30 @@ class CodexCLITests(unittest.TestCase):
                         workspace=workspace,
                         schema_path=None,
                         timeout_s=30,
-                        model="gpt-5.6-sol",
+                        model="gpt-6-astra",
                     )
                 )
 
-            self.assertEqual(attempts, ["gpt-5.6-sol", "gpt-5.4"])
+            self.assertEqual(attempts, ["gpt-6-astra", "gpt-5.4"])
             self.assertTrue(result.ok)
-            self.assertEqual(result.model_requested, "gpt-5.6-sol")
+            self.assertEqual(result.model_requested, "gpt-6-astra")
             self.assertEqual(result.model_used, "gpt-5.4")
             self.assertTrue(result.model_fallback_used)
             self.assertIn("at capacity", (result.model_fallback_reason or "").lower())
             retry_meta = read_json(workspace / "capacity_retry.json")
-            self.assertEqual(retry_meta["requested_model"], "gpt-5.6-sol")
+            self.assertEqual(retry_meta["requested_model"], "gpt-6-astra")
             self.assertEqual(retry_meta["model_used"], "gpt-5.4")
             call_meta = read_json(workspace / "call.json")
             self.assertEqual(call_meta["model_used"], "gpt-5.4")
             self.assertTrue(call_meta["model_fallback_used"])
 
-    def test_parser_defaults_reasoning_effort_to_medium(self) -> None:
+    def test_parser_defaults_reasoning_effort_to_high(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             args = build_parser().parse_args(
                 ["solve", "--backend", "mock", "--problem-text", "Prove something."]
             )
 
-        self.assertEqual(args.reasoning_effort, "medium")
+        self.assertEqual(args.reasoning_effort, "high")
 
     def test_parser_defaults_model_to_gpt_56_sol(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -201,7 +204,7 @@ class CodexCLITests(unittest.TestCase):
                 ["solve", "--backend", "mock", "--problem-text", "Prove something."]
             )
 
-        self.assertEqual(args.model, "gpt-5.6-sol")
+        self.assertEqual(args.model, "gpt-6-astra")
 
     def test_parser_capacity_fallback_models(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -219,16 +222,6 @@ class CodexCLITests(unittest.TestCase):
                 ]
             )
         self.assertEqual(_capacity_fallback_models(args), ("gpt-5.4", "gpt-5.3-codex"))
-
-    def test_parser_aristotle_is_opt_in_with_long_timeout(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            args = build_parser().parse_args(
-                ["solve", "--backend", "mock", "--problem-text", "Prove something."]
-            )
-
-        self.assertFalse(args.enable_aristotle)
-        self.assertEqual(args.aristotle_executable, "aristotle")
-        self.assertEqual(args.aristotle_timeout_s, 8 * 60 * 60)
 
     def test_parser_save_code_is_opt_in(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -352,7 +345,7 @@ class SwarmHarnessTests(unittest.TestCase):
             self.assertEqual(decision["thought"], "Recovered")
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[0]["call_id"], "orchestrator-26")
-            self.assertEqual(calls[1]["call_id"], "orchestrator-26-context-retry")
+            self.assertEqual(calls[1]["call_id"], "orchestrator-26-context-retry-01")
             self.assertLess(len(calls[1]["prompt"]), len(calls[0]["prompt"]))
             self.assertIn("recent_steps_preserved_verbatim", calls[1]["prompt"])
             self.assertIn(transcript[-1]["results"][0]["output"]["answer_fragment"], calls[1]["prompt"])
@@ -440,17 +433,17 @@ class SwarmHarnessTests(unittest.TestCase):
 
             self.assertEqual(backend.last_kwargs["model"], "gpt-specialist")
             self.assertEqual(backend.last_kwargs["reasoning_effort"], "max")
-            self.assertEqual(backend.last_kwargs["timeout_s"], 3600)
+            self.assertEqual(backend.last_kwargs["timeout_s"], settings.assign_task_timeout_s)
 
     def test_assignment_result_includes_model_used_and_fallback_metadata(self) -> None:
         class FallbackBackend(MockBackend):
             async def run_agent(self, **kwargs):
                 result = await super().run_agent(**kwargs)
-                result.model_requested = "gpt-5.6-sol"
+                result.model_requested = "gpt-6-astra"
                 result.model_used = "gpt-5.4"
                 result.model_fallback_used = True
                 result.model_fallback_reason = (
-                    "Requested model 'gpt-5.6-sol' was at capacity; retried with 'gpt-5.4'."
+                    "Requested model 'gpt-6-astra' was at capacity; retried with 'gpt-5.4'."
                 )
                 return result
 
@@ -477,14 +470,14 @@ class SwarmHarnessTests(unittest.TestCase):
                         "agent": "specialist",
                         "task_id": "hard-lemma",
                         "prompt": "Prove it.",
-                        "model": "gpt-5.6-sol",
+                        "model": "gpt-6-astra",
                     },
                     step=1,
                     index=1,
                 )
             )
 
-            self.assertEqual(entry["model_requested"], "gpt-5.6-sol")
+            self.assertEqual(entry["model_requested"], "gpt-6-astra")
             self.assertEqual(entry["model_used"], "gpt-5.4")
             self.assertTrue(entry["model_fallback_used"])
             self.assertIn("at capacity", entry["model_fallback_reason"].lower())
@@ -624,6 +617,22 @@ class SwarmHarnessTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             registry.resolve("missing")
 
+    def test_archived_subagent_is_compact_but_remains_resolvable(self) -> None:
+        registry = SubagentRegistry()
+        registry.create_subagent("gap-checker", "Check proofs for gaps.", role="critic")
+        registry.archive("gap-checker")
+
+        self.assertEqual(
+            registry.to_public_list(),
+            [{"name": "gap-checker", "role": "critic", "archived": True}],
+        )
+        self.assertEqual(registry.resolve("gap-checker").system_prompt, "Check proofs for gaps.")
+        self.assertFalse(registry.resolve("gap-checker").active)
+
+        registry.activate("gap-checker")
+        self.assertTrue(registry.resolve("gap-checker").active)
+        self.assertIn("system_prompt", registry.to_public_list()[0])
+
     def test_orchestrator_tools_mock_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -680,50 +689,6 @@ class SwarmHarnessTests(unittest.TestCase):
             self.assertTrue(artifact["save_code"])
             self.assertEqual(artifact["saved_code_path"], str(script_path))
 
-    def test_aristotle_tool_requires_prior_advisor(self) -> None:
-        workflow = load_workflow_config(ROOT / "configs" / "workflows" / "math_swarm.json")
-        with tempfile.TemporaryDirectory() as temp_dir:
-            problem = Problem(id="formal", statement="Formalize a lemma in Lean.")
-            settings = settings_from_config(Path(temp_dir), workflow, run_id="aristotle-guard")
-            orchestrator = SwarmOrchestrator(MockBackend(), settings)
-            run_dir = settings.output_dir / "workflow_runs" / "aristotle-guard"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            orchestrator._ctx = orchestrator._init_run_context(
-                run_id="aristotle-guard",
-                run_dir=run_dir,
-                agents_dir=run_dir / "agents",
-                trace_path=run_dir / "events.jsonl",
-                problem=problem,
-            )
-
-            blocked = asyncio.run(
-                orchestrator._run_tool(
-                    "aristotle",
-                    {
-                        "prompt": "Fill sorries",
-                        "mode": "submit",
-                        "project_dir": ".",
-                        "wait": True,
-                    },
-                )
-            )
-            self.assertFalse(blocked["output"]["ok"])
-            self.assertIn("Aristotle_advisor", blocked["output"]["error"])
-
-            orchestrator._ctx.aristotle_advice_seen = True
-            allowed = asyncio.run(
-                orchestrator._run_tool(
-                    "aristotle",
-                    {
-                        "prompt": "Fill sorries",
-                        "mode": "submit",
-                        "project_dir": ".",
-                        "wait": True,
-                    },
-                )
-            )
-            self.assertTrue(allowed["output"]["mock"])
-
     def test_real_code_runs_from_relative_workspace(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
             workspace = Path(os.path.relpath(Path(temp_dir) / "code-001", Path.cwd()))
@@ -761,6 +726,15 @@ class SwarmHarnessTests(unittest.TestCase):
             self.assertEqual(spec.name, "numeric-checker")
             search = asyncio.run(orchestrator.search("sqrt 2 irrational proof"))
             code = asyncio.run(orchestrator.code("print(1 + 1)"))
+            fact_receipt = orchestrator.edit_global_facts(
+                {
+                    "type": "fact_upsert",
+                    "fact_id": "sqrt2-target",
+                    "fact_kind": "hypothesis",
+                    "statement": "The target is to prove that sqrt(2) is irrational.",
+                    "justification": "This is the supplied problem statement.",
+                }
+            )
             call = asyncio.run(orchestrator.assign_task("numeric-checker", "Check whether sqrt(2) is rational."))
             graph = asyncio.run(orchestrator.Graph_builder("Build a ProofFlow-style DAG."))
             lemma = asyncio.run(
@@ -806,6 +780,8 @@ class SwarmHarnessTests(unittest.TestCase):
 
             self.assertTrue(search["mock"])
             self.assertTrue(code["mock"])
+            self.assertTrue(fact_receipt["ok"])
+            self.assertIn("sqrt2-target", orchestrator.read_global_facts()["facts"])
             self.assertTrue(call.ok)
             self.assertTrue(graph.ok)
             self.assertTrue(lemma.ok)
@@ -937,9 +913,17 @@ class SwarmHarnessTests(unittest.TestCase):
     def test_subagent_registry_round_trip_json(self) -> None:
         registry = SubagentRegistry()
         registry.create_subagent("gap-checker", "Check proofs for gaps.", role="critic")
+        registry.archive("gap-checker")
         restored = SubagentRegistry.from_json(registry.to_json())
         self.assertEqual(restored.resolve("gap-checker").system_prompt, "Check proofs for gaps.")
         self.assertEqual(restored.resolve("gap-checker").role, "critic")
+        self.assertFalse(restored.resolve("gap-checker").active)
+
+    def test_subagent_registry_old_json_defaults_to_active(self) -> None:
+        restored = SubagentRegistry.from_json(
+            {"helper": {"name": "helper", "system_prompt": "Help.", "role": "custom"}}
+        )
+        self.assertTrue(restored.resolve("helper").active)
 
     def test_resume_from_orchestrator_step_continues_run(self) -> None:
         workflow = load_workflow_config(ROOT / "configs" / "workflows" / "math_swarm.json")
@@ -1030,12 +1014,292 @@ class SwarmHarnessTests(unittest.TestCase):
             self.assertEqual(result["transcript"][0]["results"][0]["action"], "create_subagent")
             self.assertEqual(result["transcript"][0]["results"][0]["name"], "helper")
 
+    def test_global_fact_graph_supports_implications_and_cascade_edge_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = GlobalFactGraph(Path(temp_dir))
+            first = store.apply(
+                {
+                    "type": "fact_upsert",
+                    "fact_id": "given-a",
+                    "fact_kind": "hypothesis",
+                    "statement": "A holds.",
+                    "justification": "It is a hypothesis of the problem.",
+                },
+                author="orchestrator",
+            )
+            second = store.apply(
+                {
+                    "type": "fact_upsert",
+                    "fact_id": "derived-b",
+                    "fact_kind": "derived",
+                    "statement": "B holds.",
+                    "justification": "A direct argument proves B from A.",
+                },
+                author="worker-1",
+            )
+            edge = store.apply(
+                {
+                    "type": "implication_upsert",
+                    "implication_id": "a-implies-b",
+                    "premise_fact_ids": ["given-a"],
+                    "conclusion_fact_id": "derived-b",
+                    "justification": "The worker's direct argument establishes the implication.",
+                },
+                author="worker-1",
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertTrue(second["ok"])
+            self.assertTrue(edge["ok"])
+            graph = store.read()
+            self.assertEqual(set(graph["facts"]), {"given-a", "derived-b"})
+            self.assertEqual(graph["implications"]["a-implies-b"]["premise_fact_ids"], ["given-a"])
+
+            store.checkpoint(1)
+            deleted = store.apply(
+                {"type": "fact_delete", "fact_id": "given-a", "reason": "The hypothesis was withdrawn."},
+                author="orchestrator",
+            )
+            self.assertEqual(deleted["removed_implication_ids"], ["a-implies-b"])
+            self.assertNotIn("a-implies-b", store.read()["implications"])
+            self.assertTrue(store.restore_before_step(2))
+            self.assertIn("a-implies-b", store.read()["implications"])
+            self.assertTrue(store.history_path.exists())
+
+    def test_agent_memory_updates_are_applied_and_visible_to_later_agents(self) -> None:
+        class MemoryWritingBackend(MockBackend):
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def run_agent(self, **kwargs):
+                self.prompts.append(str(kwargs["prompt"]))
+                result = await super().run_agent(**kwargs)
+                if kwargs["role"] == "custom":
+                    result.parsed = {
+                        "task_id": "remember",
+                        "title": "Remember a fact",
+                        "approach": "Store the established claim.",
+                        "answer_fragment": "The claim is established.",
+                        "confidence": 0.9,
+                        "assumptions": [],
+                        "memory_updates": [
+                            {
+                                "type": "fact_upsert",
+                                "fact_id": "shared-claim",
+                                "fact_kind": "derived",
+                                "statement": "The shared claim is true.",
+                                "justification": "The assigned proof establishes it.",
+                                "implication_id": None,
+                                "premise_fact_ids": None,
+                                "conclusion_fact_id": None,
+                                "reason": None,
+                            }
+                        ],
+                    }
+                    result.content = json.dumps(result.parsed)
+                return result
+
+        workflow = load_workflow_config(ROOT / "configs" / "workflows" / "math_swarm.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backend = MemoryWritingBackend()
+            problem = Problem(id="memory", statement="Prove a shared claim.")
+            settings = settings_from_config(Path(temp_dir), workflow, run_id="memory-test")
+            orchestrator = SwarmOrchestrator(backend, settings)
+            run_dir = settings.output_dir / "workflow_runs" / "memory-test"
+            run_dir.mkdir(parents=True)
+            orchestrator._ctx = orchestrator._init_run_context(
+                run_id="memory-test",
+                run_dir=run_dir,
+                agents_dir=run_dir / "agents",
+                trace_path=run_dir / "events.jsonl",
+                problem=problem,
+            )
+            orchestrator.create_subagent("worker", "Prove and record durable facts.")
+
+            first = asyncio.run(orchestrator.assign_task("worker", "Establish the claim."))
+            asyncio.run(orchestrator.assign_task("worker", "Read the shared claim."))
+
+            self.assertIn("shared-claim", orchestrator.read_global_facts()["facts"])
+            self.assertIn("The shared claim is true.", backend.prompts[-1])
+            self.assertTrue((first.workspace / "output.json").exists())
+            self.assertTrue((run_dir / "agents" / "index.json").exists())
+            self.assertTrue((first.workspace / "global_fact_updates.json").exists())
+
+    def test_solve_uses_compact_transcript_with_agent_output_files(self) -> None:
+        workflow = load_workflow_config(ROOT / "configs" / "workflows" / "math_swarm.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = settings_from_config(Path(temp_dir), workflow, run_id="compact-transcript")
+            result = asyncio.run(
+                SwarmOrchestrator(MockBackend(), settings).solve(
+                    Problem(id="sqrt2", statement="Prove that sqrt(2) is irrational.")
+                )
+            )
+            first_agent_result = next(
+                item
+                for entry in result["transcript"]
+                for item in entry["results"]
+                if item.get("call_id")
+            )
+            self.assertNotIn("output", first_agent_result)
+            self.assertIn("output_summary", first_agent_result)
+            self.assertTrue(Path(first_agent_result["output_file"]).exists())
+            self.assertIsNotNone(extract_graph_builder_output(result["transcript"], graph_id="contradiction"))
+            self.assertTrue(Path(result["agent_index_path"]).exists())
+            self.assertTrue(Path(result["global_facts_graph_path"]).exists())
+
     def test_cli_resume_flags_require_run_dir_and_step(self) -> None:
         with self.assertRaises(ValueError):
             args = build_parser().parse_args(
                 ["solve", "--backend", "mock", "--resume-from-step", "2", "--problem-text", "x"]
             )
             asyncio.run(run_solve(args))
+
+
+class ClaudeCLITests(unittest.TestCase):
+    def test_claude_command_uses_print_json_and_inline_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            schema = Path(tmp) / "s.json"
+            schema.write_text('{"type":"object"}', encoding="utf-8")
+            backend = ClaudeCLIBackend(ClaudeCLIConfig(model="claude-test", reasoning_effort="high"))
+            cmd = backend.build_command(schema_path=schema)
+
+        self.assertEqual(cmd[:4], ["claude", "-p", "--output-format", "json"])
+        self.assertIn("claude-test", cmd)
+        self.assertIn("--effort", cmd)
+        self.assertIn("high", cmd)
+        # The schema is inlined, not passed as a path.
+        self.assertIn("--json-schema", cmd)
+        self.assertIn('{"type":"object"}', cmd)
+        self.assertNotIn("--output-schema", cmd)
+
+    def test_claude_command_maps_codex_effort_names(self) -> None:
+        backend = ClaudeCLIBackend(ClaudeCLIConfig(model="claude-test"))
+        self.assertIn("max", backend.build_command(schema_path=None, reasoning_effort="ultra"))
+        self.assertIn("low", backend.build_command(schema_path=None, reasoning_effort="minimal"))
+        # An unknown effort is dropped rather than passed through and rejected.
+        self.assertNotIn("--effort", backend.build_command(schema_path=None, reasoning_effort="bogus"))
+
+    def test_claude_read_only_sandbox_blocks_mutating_tools(self) -> None:
+        cmd = ClaudeCLIBackend(ClaudeCLIConfig(sandbox="read-only")).build_command(schema_path=None)
+        self.assertIn("--disallowedTools", cmd)
+        self.assertIn("Edit", cmd)
+        cmd = ClaudeCLIBackend(ClaudeCLIConfig(sandbox="bypass")).build_command(schema_path=None)
+        self.assertIn("--dangerously-skip-permissions", cmd)
+
+    def test_parse_claude_usage_envelope(self) -> None:
+        usage = parse_claude_json(
+            {
+                "num_turns": 3,
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "cache_read_input_tokens": 7,
+                    "output_tokens_details": {"thinking_tokens": 2},
+                },
+            }
+        )
+        self.assertEqual(usage.input_tokens, 10)
+        self.assertEqual(usage.output_tokens, 4)
+        self.assertEqual(usage.cached_input_tokens, 7)
+        self.assertEqual(usage.reasoning_output_tokens, 2)
+        self.assertEqual(usage.n_turns, 3)
+
+    def test_claude_reports_error_despite_zero_exit(self) -> None:
+        """Claude exits 0 on auth/API failures; is_error is the only reliable signal."""
+
+        envelope = json.dumps(
+            {"is_error": True, "subtype": "success", "result": "Not logged in", "num_turns": 1}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "swarm_harness.claude_cli._run_cli_subprocess_sync",
+                return_value=(0, envelope.encode(), b"", False),
+            ):
+                result = asyncio.run(
+                    ClaudeCLIBackend().run_agent(
+                        role="solver",
+                        call_id="c1",
+                        prompt="p",
+                        workspace=Path(tmp) / "ws",
+                        schema_path=None,
+                        timeout_s=5,
+                    )
+                )
+        self.assertFalse(result.ok)
+        self.assertIn("Not logged in", result.error or "")
+
+    def test_claude_extracts_structured_result(self) -> None:
+        envelope = json.dumps({"result": '{"answer": 4}', "num_turns": 1})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "swarm_harness.claude_cli._run_cli_subprocess_sync",
+                return_value=(0, envelope.encode(), b"", False),
+            ):
+                result = asyncio.run(
+                    ClaudeCLIBackend().run_agent(
+                        role="solver",
+                        call_id="c1",
+                        prompt="p",
+                        workspace=Path(tmp) / "ws",
+                        schema_path=None,
+                        timeout_s=5,
+                    )
+                )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.parsed, {"answer": 4})
+
+
+class ModelRoutingTests(unittest.TestCase):
+    class _Spy:
+        def __init__(self) -> None:
+            self.models: list[str | None] = []
+
+        async def run_agent(self, **kwargs: object) -> str | None:
+            self.models.append(kwargs["model"])  # type: ignore[arg-type]
+            return kwargs["model"]  # type: ignore[return-value]
+
+    def _dispatch(self, model: str | None) -> tuple[str, list[str | None], list[str | None]]:
+        default, claude = self._Spy(), self._Spy()
+        router = ModelRoutingBackend(default, {"claude": claude})
+        asyncio.run(
+            router.run_agent(
+                role="r", call_id="c", prompt="p", workspace=Path("/tmp"),
+                schema_path=None, timeout_s=1, model=model,
+            )
+        )
+        return type(router.backend_for(model)).__name__, default.models, claude.models
+
+    def test_claude_models_route_to_claude_backend(self) -> None:
+        _, default_seen, claude_seen = self._dispatch("claude-opus-5")
+        self.assertEqual(claude_seen, ["claude-opus-5"])
+        self.assertEqual(default_seen, [])
+
+    def test_routing_is_case_insensitive(self) -> None:
+        _, default_seen, claude_seen = self._dispatch("CLAUDE-Opus-5")
+        self.assertEqual(len(claude_seen), 1)
+        self.assertEqual(default_seen, [])
+
+    def test_unmatched_and_absent_models_use_default(self) -> None:
+        for model in ("gpt-6-astra", None):
+            _, default_seen, claude_seen = self._dispatch(model)
+            self.assertEqual(default_seen, [model])
+            self.assertEqual(claude_seen, [])
+
+    def test_claude_models_flag_wraps_codex_backend(self) -> None:
+        args = build_parser().parse_args(
+            ["solve", "--claude-models", "--problem-id", "x", "--problem-text", "y"]
+        )
+        backend = build_backend(args)
+        self.assertIsInstance(backend, ModelRoutingBackend)
+        claude = backend.backend_for("claude-sonnet-5")
+        self.assertIsInstance(claude, ClaudeCLIBackend)
+        self.assertEqual(claude.config.model, "claude-sonnet-5")
+        self.assertEqual(claude.config.reasoning_effort, "medium")
+        self.assertIsInstance(backend.backend_for("gpt-6-astra"), CodexCLIBackend)
+
+    def test_default_run_is_unrouted(self) -> None:
+        args = build_parser().parse_args(["solve", "--problem-id", "x", "--problem-text", "y"])
+        self.assertIsInstance(build_backend(args), CodexCLIBackend)
 
 
 if __name__ == "__main__":

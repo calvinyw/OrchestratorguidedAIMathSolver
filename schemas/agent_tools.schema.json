@@ -22,12 +22,29 @@
           "approach",
           "answer_fragment",
           "confidence",
-          "assumptions"
+          "assumptions",
+          "fact_id",
+          "fact_kind",
+          "statement",
+          "justification",
+          "implication_id",
+          "premise_fact_ids",
+          "conclusion_fact_id",
+          "reason"
         ],
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["search", "browse", "code", "finish"]
+            "enum": [
+              "search",
+              "browse",
+              "code",
+              "fact_upsert",
+              "fact_delete",
+              "implication_upsert",
+              "implication_delete",
+              "finish"
+            ]
           },
           "query": {
             "type": ["string", "null"]
@@ -65,6 +82,34 @@
             "items": {
               "type": "string"
             }
+          },
+          "fact_id": {
+            "type": ["string", "null"]
+          },
+          "fact_kind": {
+            "type": ["string", "null"],
+            "enum": ["hypothesis", "definition", "derived", "external", null]
+          },
+          "statement": {
+            "type": ["string", "null"]
+          },
+          "justification": {
+            "type": ["string", "null"]
+          },
+          "implication_id": {
+            "type": ["string", "null"]
+          },
+          "premise_fact_ids": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          },
+          "conclusion_fact_id": {
+            "type": ["string", "null"]
+          },
+          "reason": {
+            "type": ["string", "null"]
           }
         }
       }

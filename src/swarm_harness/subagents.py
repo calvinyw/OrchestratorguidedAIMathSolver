@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ class SubagentSpec:
     role: str = "custom"
     schema_name: str = "solver.schema.json"
     tools: tuple[str, ...] = ()
+    active: bool = True
 
 
 class SubagentRegistry:
@@ -68,16 +69,37 @@ class SubagentRegistry:
     def list_agents(self) -> list[SubagentSpec]:
         return list(self._agents.values())
 
+    def archive(self, name: str) -> SubagentSpec:
+        """Remove an agent's full definition from future orchestrator prompts."""
+        spec = self.resolve(name)
+        archived = replace(spec, active=False)
+        self._agents[spec.name] = archived
+        self._persist()
+        return archived
+
+    def activate(self, name: str) -> SubagentSpec:
+        """Restore an archived agent to the orchestrator's active working set."""
+        spec = self.resolve(name)
+        active = replace(spec, active=True)
+        self._agents[spec.name] = active
+        self._persist()
+        return active
+
     def to_public_list(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": spec.name,
-                "role": spec.role,
-                "tools": list(spec.tools),
-                "system_prompt": spec.system_prompt,
-            }
-            for spec in self._agents.values()
-        ]
+        agents: list[dict[str, Any]] = []
+        for spec in self._agents.values():
+            if spec.active:
+                agents.append(
+                    {
+                        "name": spec.name,
+                        "role": spec.role,
+                        "tools": list(spec.tools),
+                        "system_prompt": spec.system_prompt,
+                    }
+                )
+            else:
+                agents.append({"name": spec.name, "role": spec.role, "archived": True})
+        return agents
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -87,6 +109,7 @@ class SubagentRegistry:
                 "schema_name": spec.schema_name,
                 "tools": list(spec.tools),
                 "system_prompt": spec.system_prompt,
+                "active": spec.active,
             }
             for spec in self._agents.values()
         }
@@ -106,6 +129,7 @@ class SubagentRegistry:
                 role=str(raw.get("role") or "custom"),
                 schema_name=str(raw.get("schema_name") or "solver.schema.json"),
                 tools=tuple(raw.get("tools") or ()),
+                active=bool(raw.get("active", True)),
             )
         self._agents = agents
 

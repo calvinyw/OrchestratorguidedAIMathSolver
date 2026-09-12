@@ -14,6 +14,31 @@ from swarm_harness.records import AgentCallResult, TokenUsage
 from swarm_harness.util import first_json_object, utc_now, write_json
 
 
+def _run_codex_subprocess_sync(
+    cmd: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    prompt: str,
+    timeout_s: int,
+) -> tuple[int, bytes, bytes, bool]:
+    """Run Codex in a worker thread so parallel agent calls do not hang asyncio subprocess."""
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            cmd,
+            input=prompt.encode("utf-8"),
+            capture_output=True,
+            cwd=cwd,
+            env=env,
+            timeout=timeout_s,
+        )
+        return completed.returncode, completed.stdout, completed.stderr, False
+    except subprocess.TimeoutExpired as exc:
+        return -1, exc.stdout or b"", exc.stderr or b"", True
+
+
 class AgentBackend(Protocol):
     async def run_agent(
         self,
@@ -239,24 +264,14 @@ class CodexCLIBackend:
 
         started_at = utc_now()
         start = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+        returncode, stdout_raw, stderr_raw, timed_out = await asyncio.to_thread(
+            _run_codex_subprocess_sync,
+            cmd,
             cwd=str(workspace),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
             env=os.environ.copy(),
+            prompt=prompt,
+            timeout_s=timeout_s,
         )
-        timed_out = False
-        try:
-            stdout_raw, stderr_raw = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
-                timeout=timeout_s,
-            )
-        except TimeoutError:
-            timed_out = True
-            proc.kill()
-            stdout_raw, stderr_raw = await proc.communicate()
 
         finished_at = utc_now()
         stdout = stdout_raw.decode("utf-8", errors="replace")
@@ -266,7 +281,7 @@ class CodexCLIBackend:
         (workspace / f"stdout.{attempt_label}.jsonl").write_text(stdout, encoding="utf-8")
         (workspace / f"stderr.{attempt_label}.txt").write_text(stderr, encoding="utf-8")
 
-        returncode = proc.returncode if proc.returncode is not None else -1
+        returncode = returncode if returncode is not None else -1
         content = ""
         if last_message_path.exists() and returncode == 0 and not timed_out:
             content = last_message_path.read_text(encoding="utf-8", errors="replace")

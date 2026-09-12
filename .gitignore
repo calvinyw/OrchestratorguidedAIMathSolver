@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,23 +9,15 @@ venv/
 build/
 dist/
 *.egg-info/
-outputs/*
-!outputs/workflow_runs/
-outputs/workflow_runs/*
-!outputs/workflow_runs/cross_ratio_degree_one_conjecture-5719e2a9/
-!outputs/workflow_runs/sqrt2-ebf37186/
-input txts/*
-!input txts/cross_ratio_degree_one_conjecture_prompt.txt
-!input txts/prompt_prove_sqrt2_irrational.txt
-!outputs/workflow_runs_5.6/
-outputs/workflow_runs_5.6/*
-!outputs/workflow_runs_5.6/workflow_runs/
-outputs/workflow_runs_5.6/workflow_runs/*
-!outputs/workflow_runs_5.6/workflow_runs/conjecture_8_7-7dd82763/
-!outputs/workflow_runs_5.6/workflow_runs/conjecture_8_7_quiver-3fe61e9b/
 
-!input txts/conjecture_8_7.txt
-!input txts/conjecture_8_7_for_quiver_research_prompt.txt
+# Problem inputs and run outputs
+outputs/
+input txts/
 smoke/output*/
-.DS_Store
+smoke/input.json
+smoke/*.txt
 
+# Per-problem launchers (scripts/run_swarm.py and scripts/harness_entrypoint.py stay tracked)
+scripts/run_*.sh
+
+.DS_Store

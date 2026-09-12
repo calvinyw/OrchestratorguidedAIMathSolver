@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from swarm_harness.records import Problem
@@ -29,6 +30,9 @@ Available orchestrator commands (Kimi-style):
   symbolic algebra and number theory; Macaulay2 for commutative algebra and Groebner bases;
   Python for general numeric or scripting checks.
 - create_subagent(name, system_prompt): spin up a specialized subagent on demand
+- archive_subagent(name): move a subagent out of the active working set once its work is complete;
+  its full definition remains persisted and it can be restored later
+- activate_subagent(name): restore an archived subagent to the active working set
 - assign_task(agent, prompt, model?, reasoning_effort?): delegate a subtask to a subagent you created
 - critiquer(statement, proof, prompt?, task_id?): ask the standard critiquer to review a proof of
   the given statement and find gaps or revision tasks
@@ -37,12 +41,14 @@ Available orchestrator commands (Kimi-style):
 - counterexample_finder(statement, prompt?, task_id?): ask the standard counterexample finder to
   stress-test a statement by actively searching for a counterexample (useful when a proof keeps
   failing or a critiquer rejects it—checks whether the statement itself might be false)
+- fact_upsert(fact_id?, fact_kind, statement, justification): create or revise a node in the
+  shared true-facts graph; omit fact_id to generate a stable content-based id
+- fact_delete(fact_id, reason): remove a false or obsolete fact and its incident implications
+- implication_upsert(implication_id?, premise_fact_ids, conclusion_fact_id, justification):
+  create or revise a directed implication from one or more premise facts to a conclusion fact
+- implication_delete(implication_id, reason): remove an invalid implication
 - finish(answer, confidence, reasoning_summary, caveats, sources): return the final answer
 """.strip()
-
-# Harmonic Aristotle (disabled until configured):
-# - Aristotle_advisor(prompt, task_id?): read Aristotle docs and recommend whether/how to call Aristotle.
-# - aristotle(prompt, mode?, ...): call the Harmonic Aristotle CLI for Lean formalization or sorry filling.
 
 
 def agent_prompt(spec_system_prompt: str, task_prompt: str) -> str:
@@ -58,6 +64,7 @@ def orchestrator_prompt(
     role_description: str,
     *,
     force_finish: bool = False,
+    model_menu: str = "",
 ) -> str:
     force_note = ""
     if force_finish:
@@ -81,22 +88,22 @@ or verify evidence, and finish once you have a rigorous, well-supported answer.
 Respond with only JSON matching the provided schema: a short "thought" and an "actions" list.
 Guidelines:
 - Create a subagent before assigning it a task; reference it by the exact name you gave it.
+- Archive specialists whose work is complete so their full definitions stop consuming context.
+  Activate an archived specialist before reusing it. Archived definitions remain safely persisted.
 - The standard roles are optional building blocks, not a required sequence. Pick whatever
   structure fits the problem—including fully custom subagents—and skip or reorder any of them.
-- Worker agent calls (assign_task and standard-task actions) default to gpt-5.6-sol with high
-  reasoning when you omit model/reasoning_effort. You may override per task.
-- Reserve reasoning_effort="ultra" (with gpt-5.6-sol) for genuinely difficult mathematical
-  reasoning: lemma_prover, proof_writer, final_proof_writer, and assign_task calls whose main job is
-  proving nontrivial lemmas or constructing hard proof steps.
-- For other worker tasks, the high default is often sufficient; pick a different model or
-  reasoning effort only when you have a specific reason.
-- If a requested model is at capacity, the harness automatically retries that same prompt on a
+- You and GPT worker calls use the run's configured default GPT model (gpt-6-astra by default)
+  when model is omitted. You (the orchestrator) run at reasoning_effort="xhigh" (very high).
+  Prefer omitting model unless you intentionally select an available alternate model. Worker calls
+  default to high reasoning; raise the effort for work that warrants it.
+- Reserve the configured GPT model's highest reasoning effort for genuinely difficult mathematical
+  reasoning: lemma_prover, final_proof_writer, and assign_task calls whose main job is proving
+  nontrivial lemmas or constructing hard proof steps.
+{model_menu}- If a requested model is at capacity, the harness automatically retries that same prompt on a
   simpler fallback model. Transcript results then include model_requested, model_used, and
   model_fallback_used=true (with model_fallback_reason). Treat model_used as the model that
-  actually produced the output; if a fallback ran, weigh the result accordingly and re-run on a
-  stronger model later if the work is critical.
-- One pattern you may use if (and only if) it fits: Graph_builder can decompose a proof into one
-  or more ProofFlow-style dependency DAGs (e.g. alternative approaches); pick a graph_id and use
+  actually produced the output.
+- Graph_builder writes a mathematical approach as a ProofFlow-style dependency DAG of statements; pick a graph_id and use
   lemma_prover to prove individual nodes (in parallel where dependencies allow); proof_writer can
   draft a rigorous LaTeX proof of a stated claim;
   final_proof_writer can assemble prior LaTeX proofs into one complete document for the original
@@ -121,6 +128,9 @@ Guidelines:
 - Prefer spawning a few complementary specialists (e.g. a prover and an independent checker)
   and running them in parallel over doing everything yourself.
 - Use search/browse/code only when they add real value.
+- Keep durable established results in the shared true-facts graph. Add implications when the
+  conclusion is justified by named premise facts, and correct graph entries when later work
+  exposes an error. The graph is shared with every worker.
 - Emit "finish" alone, in its own step, when the aggregated work is correct and complete.
 
 <problem_id>{problem.id}</problem_id>
@@ -159,60 +169,6 @@ Available helper sub-subagents (invoke via JSON actions while you work):
 - finish(...): return your final result with task_id, title, approach, answer_fragment (the definition
   of the term, in prose/LaTeX), confidence, and assumptions
 """.strip()
-
-
-ARISTOTLE_ADVISOR_HELPER_COMMANDS = """
-Available helper sub-subagents (invoke via JSON actions while you work):
-- search(query): delegate to a search helper to find current Aristotle SDK/API/CLI documentation
-- browse(url): delegate to a browse helper to read Aristotle documentation pages
-- code(instruction, language?): delegate to a code helper for lightweight local inspection only
-- finish(...): return your recommendation with task_id, title, approach, answer_fragment,
-  confidence, and assumptions
-""".strip()
-
-
-def aristotle_advisor_task_prompt(
-    problem: Problem,
-    task_id: str,
-    task_prompt: str,
-    transcript: list[dict[str, Any]],
-) -> str:
-    return f"""You are the standard Aristotle advisor in a self-directed math-solving swarm.
-
-Your job is to decide whether and exactly how this run should call Harmonic Aristotle. First read
-current Aristotle API/SDK/CLI documentation using search and browse. Then recommend a concrete,
-minimal Aristotle call only if it is appropriate for this problem and the available artifacts.
-
-Respond with only JSON matching the provided schema: a short "thought" and an "actions" list.
-
-{ARISTOTLE_ADVISOR_HELPER_COMMANDS}
-
-Guidelines:
-- Prefer Aristotle for Lean formalization, filling `sorry`s in an existing Lean project, or checking
-  formal proof obligations. Do not recommend it just for ordinary informal proof drafting.
-- Note that Aristotle jobs can take many hours; recommend using `wait=true` only when the run budget
-  can tolerate it.
-- If recommending `mode=submit`, identify the Lean project directory and the prompt to pass.
-- If recommending `mode=formalize`, identify the source document and destination archive.
-- State what must be checked after the run, especially searching returned Lean files for `sorry` or
-  `admit` before treating the result as formally proved.
-- If documentation is unavailable or access is unclear, recommend not calling Aristotle.
-- Put your recommendation in answer_fragment. Include the proposed action fields: mode, prompt,
-  project_dir or source_path, destination, wait, and expected runtime risk.
-- Emit a single finish action (alone) once your recommendation is settled.
-
-<problem_id>{problem.id}</problem_id>
-<problem>
-{problem.statement}
-</problem>
-<task_id>{task_id}</task_id>
-<task>
-{task_prompt}
-</task>
-<transcript>
-{json.dumps(transcript, indent=2, ensure_ascii=False, default=str)}
-</transcript>
-"""
 
 
 def term_definer_task_prompt(
@@ -436,13 +392,30 @@ def _graph_from_builder_output(output: dict[str, Any], *, graph_id: str | None =
     return None
 
 
+def _result_output(result: dict[str, Any]) -> dict[str, Any] | None:
+    inline = result.get("output")
+    if isinstance(inline, dict):
+        return inline
+    for key in ("output_file", "full_output_artifact"):
+        value = result.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            raw = json.loads(Path(value).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(raw, dict):
+            return raw
+    return None
+
+
 def extract_graph_builder_bundle(transcript: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the most recent raw Graph_builder output from the orchestrator transcript."""
     for entry in reversed(transcript):
         for result in reversed(entry.get("results") or []):
             if str(result.get("action") or "") != "Graph_builder":
                 continue
-            output = result.get("output")
+            output = _result_output(result)
             if isinstance(output, dict) and (
                 isinstance(output.get("graphs"), list) or isinstance(output.get("nodes"), list)
             ):
@@ -469,7 +442,7 @@ def extract_lemma_proofs(transcript: list[dict[str, Any]]) -> list[dict[str, Any
         for result in entry.get("results") or []:
             if str(result.get("action") or "") != "lemma_prover":
                 continue
-            output = result.get("output")
+            output = _result_output(result)
             if not isinstance(output, dict):
                 continue
             proofs.append(
@@ -685,7 +658,7 @@ def extract_prior_proofs(transcript: list[dict[str, Any]]) -> list[dict[str, Any
             action = str(result.get("action") or "")
             if action not in {"lemma_prover", "proof_writer"}:
                 continue
-            output = result.get("output")
+            output = _result_output(result)
             if not isinstance(output, dict):
                 continue
             latex_proof = output.get("answer_fragment")

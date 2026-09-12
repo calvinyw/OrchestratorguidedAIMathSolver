@@ -4,8 +4,6 @@ import asyncio
 import html
 import re
 import time
-import os
-import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,7 +14,7 @@ from swarm_harness.util import append_jsonl, safe_id, utc_now, write_json
 
 
 class OrchestratorTools:
-    """Kimi-style orchestrator tools: search, browse, code, and optional Aristotle."""
+    """Kimi-style orchestrator tools: search, browse, and code."""
 
     SUPPORTED_CODE_LANGUAGES = ("python", "sage", "macaulay2")
 
@@ -28,9 +26,6 @@ class OrchestratorTools:
         mock: bool = False,
         browse_timeout_s: int = 30,
         code_timeout_s: int = 60,
-        aristotle_enabled: bool = False,
-        aristotle_executable: str = "aristotle",
-        aristotle_timeout_s: int = 8 * 60 * 60,
         codebase_dir: Path | None = None,
         save_code: bool = False,
     ) -> None:
@@ -39,9 +34,6 @@ class OrchestratorTools:
         self.mock = mock
         self.browse_timeout_s = browse_timeout_s
         self.code_timeout_s = code_timeout_s
-        self.aristotle_enabled = aristotle_enabled
-        self.aristotle_executable = aristotle_executable
-        self.aristotle_timeout_s = aristotle_timeout_s
         self.codebase_dir = codebase_dir.resolve() if codebase_dir is not None else None
         self.save_code = bool(save_code)
         if self.save_code and self.codebase_dir is None:
@@ -165,71 +157,6 @@ class OrchestratorTools:
         append_jsonl(self.trace_path, {"type": "orchestrator.code.end", **artifact})
         return result
 
-    async def aristotle(
-        self,
-        prompt: str,
-        *,
-        mode: str = "submit",
-        project_dir: Path | None = None,
-        source_path: Path | None = None,
-        destination: Path | None = None,
-        wait: bool = True,
-    ) -> dict[str, Any]:
-        """Run the optional Aristotle CLI for Lean formalization or sorry filling."""
-        call_id = self._next_call_id("aristotle")
-        started = time.monotonic()
-        workspace = self.tools_dir / call_id
-        workspace.mkdir(parents=True, exist_ok=True)
-        append_jsonl(
-            self.trace_path,
-            {
-                "type": "orchestrator.aristotle",
-                "call_id": call_id,
-                "mode": mode,
-                "prompt": prompt,
-                "project_dir": str(project_dir) if project_dir else None,
-                "source_path": str(source_path) if source_path else None,
-                "destination": str(destination) if destination else None,
-                "wait": wait,
-                "at": utc_now(),
-            },
-        )
-        if self.mock:
-            result = _mock_aristotle(prompt, mode)
-        elif not self.aristotle_enabled:
-            result = {
-                "ok": False,
-                "error": "Aristotle tool is disabled. Re-run with --enable-aristotle and ARISTOTLE_API_KEY set.",
-            }
-        else:
-            result = await _real_aristotle(
-                self.aristotle_executable,
-                prompt,
-                mode=mode,
-                project_dir=project_dir,
-                source_path=source_path,
-                destination=destination,
-                wait=wait,
-                workspace=workspace,
-                timeout_s=self.aristotle_timeout_s,
-            )
-        artifact = {
-            "tool": "aristotle",
-            "call_id": call_id,
-            "mode": mode,
-            "prompt": prompt,
-            "project_dir": str(project_dir) if project_dir else None,
-            "source_path": str(source_path) if source_path else None,
-            "destination": str(destination) if destination else None,
-            "wait": wait,
-            "result": result,
-            "duration_seconds": time.monotonic() - started,
-            "at": utc_now(),
-        }
-        write_json(self.tools_dir / f"{call_id}.json", artifact)
-        append_jsonl(self.trace_path, {"type": "orchestrator.aristotle.end", **artifact})
-        return result
-
     def _next_call_id(self, prefix: str) -> str:
         self._counter += 1
         return f"{prefix}-{self._counter:03d}"
@@ -266,19 +193,6 @@ def _mock_code(instruction: str, language: str = "python") -> dict[str, Any]:
         "stderr": "",
         "returncode": 0,
         "mock": True,
-    }
-
-
-def _mock_aristotle(prompt: str, mode: str) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "mode": mode,
-        "prompt": prompt,
-        "stdout": "mock Aristotle output",
-        "stderr": "",
-        "returncode": 0,
-        "mock": True,
-        "warning": "Mock mode does not call Harmonic Aristotle or verify Lean output.",
     }
 
 
@@ -415,77 +329,6 @@ async def _real_code(
         "returncode": proc.returncode if proc.returncode is not None else -1,
         "script_path": str(script_path),
     }
-
-
-async def _real_aristotle(
-    executable: str,
-    prompt: str,
-    *,
-    mode: str,
-    project_dir: Path | None,
-    source_path: Path | None,
-    destination: Path | None,
-    wait: bool,
-    workspace: Path,
-    timeout_s: int,
-) -> dict[str, Any]:
-    if not os.environ.get("ARISTOTLE_API_KEY"):
-        return {"ok": False, "error": "ARISTOTLE_API_KEY is not set."}
-    if shutil.which(executable) is None:
-        return {"ok": False, "error": f"Aristotle executable {executable!r} was not found on PATH."}
-
-    normalized_mode = (mode or "submit").strip().lower()
-    if normalized_mode == "submit":
-        if project_dir is None:
-            return {"ok": False, "error": "aristotle submit requires project_dir."}
-        command = [executable, "submit", prompt, "--project-dir", str(project_dir)]
-    elif normalized_mode == "formalize":
-        if source_path is None:
-            return {"ok": False, "error": "aristotle formalize requires source_path."}
-        command = [executable, "formalize", str(source_path)]
-    else:
-        return {"ok": False, "error": "Unsupported Aristotle mode. Use submit or formalize."}
-
-    if wait:
-        command.append("--wait")
-    if destination is not None:
-        command.extend(["--destination", str(destination)])
-
-    proc = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=str(workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except TimeoutError:
-        proc.kill()
-        stdout_raw, stderr_raw = await proc.communicate()
-        return {
-            "ok": False,
-            "command": command,
-            "stdout": stdout_raw.decode("utf-8", errors="replace"),
-            "stderr": stderr_raw.decode("utf-8", errors="replace"),
-            "returncode": -1,
-            "error": f"Aristotle timed out after {timeout_s}s. These jobs can be very long.",
-        }
-
-    stdout = stdout_raw.decode("utf-8", errors="replace")
-    stderr = stderr_raw.decode("utf-8", errors="replace")
-    return {
-        "ok": proc.returncode == 0,
-        "command": command,
-        "stdout": stdout,
-        "stderr": stderr,
-        "returncode": proc.returncode if proc.returncode is not None else -1,
-        "contains_unresolved_placeholders": _mentions_unresolved_lean_placeholder(stdout + "\n" + stderr),
-        "warning": "Treat Aristotle output as a proof attempt until downloaded Lean files are checked for sorry/admit.",
-    }
-
-
-def _mentions_unresolved_lean_placeholder(text: str) -> bool:
-    return bool(re.search(r"\b(sorry|admit)\b", text, re.IGNORECASE))
 
 
 def _fetch_url(url: str, timeout_s: int) -> str:

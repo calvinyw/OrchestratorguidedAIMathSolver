@@ -75,6 +75,8 @@ def _run_compile(command: list[str], *, tex_path: Path, timeout_s: int, engine: 
             command,
             cwd=tex_path.parent,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout_s,
             check=False,

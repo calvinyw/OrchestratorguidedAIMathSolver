@@ -15,7 +15,6 @@ from swarm_harness.prompts import (
     ORCHESTRATOR_COMMANDS,
     agent_prompt,
     agent_tools_step_prompt,
-    aristotle_advisor_task_prompt,
     counterexample_finder_task_prompt,
     critiquer_task_prompt,
     final_critiquer_task_prompt,
@@ -30,6 +29,14 @@ from swarm_harness.prompts import (
     tex_artifact_prompt,
 )
 from swarm_harness.records import AgentCallResult, Problem, TokenUsage
+from swarm_harness.routing import ModelRoutingBackend
+from swarm_harness.shared_storage import (
+    MEMORY_ACTIONS,
+    GlobalFactGraph,
+    agent_index_prompt_view,
+    memory_updates_from_response,
+    update_agent_index,
+)
 from swarm_harness.subagents import SubagentRegistry, SubagentSpec
 from swarm_harness.tools import OrchestratorTools
 from swarm_harness.util import append_jsonl, read_json, safe_id, utc_now, write_json
@@ -37,14 +44,14 @@ from swarm_harness.util import append_jsonl, read_json, safe_id, utc_now, write_
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMA_DIR = REPO_ROOT / "schemas"
-ORCHESTRATOR_REASONING_EFFORT = "ultra"
+ORCHESTRATOR_REASONING_EFFORT = "xhigh"
 ORCHESTRATOR_RECENT_STEPS_ON_RETRY = 8
 ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS = 120_000
 
-_TOOL_ACTIONS = {"search", "browse", "code", "aristotle"}
+_TOOL_ACTIONS = {"search", "browse", "code"}
+_MEMORY_ACTIONS = MEMORY_ACTIONS
 _STANDARD_TASK_ACTIONS = {
     "Graph_builder",
-    "Aristotle_advisor",
     "lemma_prover",
     "proof_writer",
     "final_proof_writer",
@@ -66,10 +73,7 @@ _STANDARD_TASK_SPECS = {
         "role": "graph_builder",
         "schema_name": "graph_builder.schema.json",
         "system_prompt": (
-            "You are a Graph_builder for a math-solving swarm. Decompose a proof into one or more "
-            "ProofFlow-style directed acyclic graphs of statements (alternative approaches when "
-            "useful), where each node is provable from its incoming dependency nodes and standard "
-            "facts."
+            "You are a Graph_builder for a math-solving swarm. Decompose a proof into one or more directed acyclic graphs of statements, where each node is provable from its incoming dependency nodes and standard facts."
         ),
     },
     "lemma_prover": {
@@ -164,17 +168,6 @@ _STANDARD_TASK_SPECS = {
             "helper sub-subagents."
         ),
     },
-    "Aristotle_advisor": {
-        "name": "aristotle-advisor",
-        "role": "aristotle_advisor",
-        "schema_name": "solver.schema.json",
-        "tools": ("search", "browse", "code"),
-        "system_prompt": (
-            "You are an Aristotle advisor for a math-solving swarm. Before any Aristotle CLI/API "
-            "call, read current Aristotle documentation, decide whether Aristotle is appropriate, "
-            "and recommend the exact formalization or sorry-filling call only when justified."
-        ),
-    },
 }
 
 
@@ -185,14 +178,11 @@ class SwarmSettings:
     schema_dir: Path = DEFAULT_SCHEMA_DIR
     max_parallel: int = 30
     max_steps: int = 40
-    max_runtime_minutes: int = 600
-    agent_timeout_s: int = 3000
-    assign_task_timeout_s: int = 6000
+    max_runtime_minutes: int = 1200
+    agent_timeout_s: int = 7200
+    assign_task_timeout_s: int = 7200
     run_id: str | None = None
     tools_mock: bool | None = None
-    aristotle_enabled: bool = False
-    aristotle_executable: str = "aristotle"
-    aristotle_timeout_s: int = 8 * 60 * 60
     codebase_dir: Path | None = None
     save_code: bool = False
 
@@ -206,8 +196,8 @@ class _RunContext:
     problem: Problem
     registry: SubagentRegistry
     tools: OrchestratorTools
+    fact_graph: GlobalFactGraph
     call_counter: int = 0
-    aristotle_advice_seen: bool = False
 
 
 class SwarmOrchestrator:
@@ -257,6 +247,24 @@ class SwarmOrchestrator:
                 "tools": list(spec.tools),
                 "at": utc_now(),
             },
+        )
+        return spec
+
+    def archive_subagent(self, name: str) -> SubagentSpec:
+        """Archive a subagent while retaining its persisted definition."""
+        spec = self._require_context().registry.archive(name)
+        append_jsonl(
+            self._require_context().trace_path,
+            {"type": "orchestrator.archive_subagent", "name": spec.name, "at": utc_now()},
+        )
+        return spec
+
+    def activate_subagent(self, name: str) -> SubagentSpec:
+        """Return an archived subagent to the active prompt working set."""
+        spec = self._require_context().registry.activate(name)
+        append_jsonl(
+            self._require_context().trace_path,
+            {"type": "orchestrator.activate_subagent", "name": spec.name, "at": utc_now()},
         )
         return spec
 
@@ -339,7 +347,7 @@ class SwarmOrchestrator:
                 code_items = [item for item in helper_results if item.get("action") == "code"]
                 if code_items:
                     finish = {**finish, "code_verifications": code_items}
-                return AgentCallResult(
+                result = AgentCallResult(
                     role=last_call.role,
                     call_id=call_id,
                     workspace=ctx.agents_dir / call_id,
@@ -360,13 +368,29 @@ class SwarmOrchestrator:
                     model_fallback_used=last_call.model_fallback_used,
                     model_fallback_reason=last_call.model_fallback_reason,
                 )
+                self._persist_agent_call(result)
+                return result
 
             tool_actions = [
                 action
                 for action in decision.get("actions") or []
                 if isinstance(action, dict) and str(action.get("type") or "") in spec.tools
             ]
-            if not tool_actions:
+            memory_actions = [
+                action
+                for action in decision.get("actions") or []
+                if isinstance(action, dict) and str(action.get("type") or "") in _MEMORY_ACTIONS
+            ]
+            for action in memory_actions:
+                helper_results.append(
+                    {
+                        "step": step,
+                        "action": str(action.get("type") or ""),
+                        "request": action,
+                        "output": "Applied to the shared fact graph; the next prompt includes the updated graph.",
+                    }
+                )
+            if not tool_actions and not memory_actions:
                 break
 
             for action in tool_actions:
@@ -384,7 +408,7 @@ class SwarmOrchestrator:
         if last_call is None:
             raise RuntimeError(f"Agent {spec.name!r} with tools did not produce a response.")
         parsed = last_call.parsed if isinstance(last_call.parsed, dict) else None
-        return AgentCallResult(
+        result = AgentCallResult(
             role=last_call.role,
             call_id=call_id,
             workspace=ctx.agents_dir / call_id,
@@ -405,6 +429,8 @@ class SwarmOrchestrator:
             model_fallback_used=last_call.model_fallback_used,
             model_fallback_reason=last_call.model_fallback_reason,
         )
+        self._persist_agent_call(result)
+        return result
 
     async def search(self, query: str) -> dict[str, Any]:
         """Search for references or background material."""
@@ -427,6 +453,14 @@ class SwarmOrchestrator:
             language=language,
             workspace=workspace,
         )
+
+    def edit_global_facts(self, action: dict[str, Any], *, author: str = "orchestrator") -> dict[str, Any]:
+        """Apply one audited fact or implication edit to the shared graph."""
+        return self._require_context().fact_graph.apply(action, author=author)
+
+    def read_global_facts(self) -> dict[str, Any]:
+        """Read the complete shared true-facts and implications graph."""
+        return self._require_context().fact_graph.read()
 
     async def proof_writer(
         self,
@@ -597,23 +631,6 @@ class SwarmOrchestrator:
             term=term,
         )
 
-    async def Aristotle_advisor(
-        self,
-        prompt: str = "",
-        *,
-        task_id: str = "aristotle-advice",
-        call_id: str | None = None,
-        transcript: list[dict[str, Any]] | None = None,
-    ) -> AgentCallResult:
-        """Ask the standard Aristotle advisor to read docs and recommend a call."""
-        return await self._run_standard_task(
-            "Aristotle_advisor",
-            prompt,
-            task_id=task_id,
-            call_id=call_id,
-            transcript=transcript or [],
-        )
-
     # -- Main entry point ----------------------------------------------------
 
     async def solve(self, problem: Problem) -> dict[str, Any]:
@@ -646,6 +663,7 @@ class SwarmOrchestrator:
         write_json(run_dir / "workflow_config.json", workflow)
         write_json(run_dir / "orchestrator_commands.json", {"commands": ORCHESTRATOR_COMMANDS})
         write_json(run_dir / "subagents.json", self._ctx.registry.to_json())
+        self._ctx.fact_graph.checkpoint(0)
 
         return await self._run_loop(
             problem,
@@ -689,8 +707,8 @@ class SwarmOrchestrator:
             problem=problem,
             registry=registry,
         )
+        self._ctx.fact_graph.restore_before_step(from_step)
         self._restore_run_counters(self._ctx)
-        self._ctx.aristotle_advice_seen = _transcript_saw_aristotle_advisor(transcript)
         started_at = utc_now()
         append_jsonl(
             trace_path,
@@ -752,6 +770,7 @@ class SwarmOrchestrator:
             )
             write_json(run_dir / "transcript.json", transcript)
             write_json(run_dir / "subagents.json", self._ctx.registry.to_json())
+            self._ctx.fact_graph.checkpoint(step)
             if finish is not None:
                 final = finish
 
@@ -772,6 +791,7 @@ class SwarmOrchestrator:
                 }
             )
             write_json(run_dir / "transcript.json", transcript)
+            self._ctx.fact_graph.checkpoint(step)
             final = finish or _fallback_finish(transcript)
 
         write_json(run_dir / "transcript.json", transcript)
@@ -807,6 +827,9 @@ class SwarmOrchestrator:
             "transcript": transcript,
             "usage": total_usage.to_json(),
             "run_dir": str(run_dir),
+            "transcript_path": str(run_dir / "transcript.json"),
+            "agent_index_path": str(run_dir / "agents" / "index.json"),
+            "global_facts_graph_path": str(run_dir / "global_facts" / "graph.json"),
             "solution_md_path": str(solution_md_path),
             "solution_tex_path": str(solution_tex_path),
             "solution_pdf_path": str(solution_pdf_path),
@@ -875,6 +898,7 @@ class SwarmOrchestrator:
     ) -> dict[str, Any]:
         ctx = self._require_context()
         call_id = f"orchestrator-{step:02d}"
+        model_menu = self._model_menu()
         prompt = orchestrator_prompt(
             problem,
             transcript,
@@ -883,6 +907,7 @@ class SwarmOrchestrator:
             max_steps,
             _role_description(self.settings.workflow_config, "orchestrator"),
             force_finish=force_finish,
+            model_menu=model_menu,
         )
         call = await self._call(
             role="orchestrator",
@@ -893,34 +918,68 @@ class SwarmOrchestrator:
             trace_path=ctx.trace_path,
             reasoning_effort=ORCHESTRATOR_REASONING_EFFORT,
         )
-        if (
-            not call.ok
-            and _is_input_too_large(call)
-            and len(transcript) > ORCHESTRATOR_RECENT_STEPS_ON_RETRY
-        ):
-            compacted_transcript, compaction = _compact_orchestrator_transcript(
-                transcript,
-                run_dir=ctx.run_dir,
-                keep_recent_steps=ORCHESTRATOR_RECENT_STEPS_ON_RETRY,
-                max_older_chars=ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS,
-            )
-            retry_prompt = orchestrator_prompt(
-                problem,
-                compacted_transcript,
-                ctx.registry.to_public_list(),
-                step,
-                max_steps,
-                _role_description(self.settings.workflow_config, "orchestrator"),
-                force_finish=force_finish,
-            )
-            if len(retry_prompt) < len(prompt):
-                retry_call_id = f"{call_id}-context-retry"
+        if not call.ok and _is_input_too_large(call) and transcript:
+            compaction_plans: list[tuple[str, dict[str, Any]]] = [
+                (
+                    "partial",
+                    {
+                        "keep_recent_steps": ORCHESTRATOR_RECENT_STEPS_ON_RETRY,
+                        "max_older_chars": ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS,
+                    },
+                ),
+                (
+                    "partial-half",
+                    {
+                        "keep_recent_steps": max(1, len(transcript) // 2),
+                        "max_older_chars": ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS,
+                    },
+                ),
+                (
+                    "partial-one-recent",
+                    {
+                        "keep_recent_steps": 1,
+                        "max_older_chars": ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS,
+                    },
+                ),
+                ("full", {"max_total_chars": ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS}),
+            ]
+            for attempt_index, (attempt_name, plan) in enumerate(compaction_plans, start=1):
+                if attempt_name == "full":
+                    compacted_transcript, compaction = _compact_orchestrator_transcript_fully(
+                        transcript,
+                        run_dir=ctx.run_dir,
+                        max_total_chars=int(plan["max_total_chars"]),
+                    )
+                else:
+                    keep_recent = int(plan["keep_recent_steps"])
+                    if len(transcript) <= keep_recent:
+                        keep_recent = max(1, len(transcript) // 2)
+                    compacted_transcript, compaction = _compact_orchestrator_transcript(
+                        transcript,
+                        run_dir=ctx.run_dir,
+                        keep_recent_steps=keep_recent,
+                        max_older_chars=int(plan["max_older_chars"]),
+                    )
+                retry_prompt = orchestrator_prompt(
+                    problem,
+                    compacted_transcript,
+                    ctx.registry.to_public_list(),
+                    step,
+                    max_steps,
+                    _role_description(self.settings.workflow_config, "orchestrator"),
+                    force_finish=force_finish,
+                    model_menu=model_menu,
+                )
+                if len(retry_prompt) >= len(prompt):
+                    continue
+                retry_call_id = f"{call_id}-context-retry-{attempt_index:02d}"
                 append_jsonl(
                     ctx.trace_path,
                     {
                         "type": "orchestrator.context_compacted",
                         "step": step,
                         "reason": "input_too_large",
+                        "attempt": attempt_name,
                         "original_call_id": call_id,
                         "retry_call_id": retry_call_id,
                         "original_prompt_chars": len(prompt),
@@ -938,6 +997,9 @@ class SwarmOrchestrator:
                     trace_path=ctx.trace_path,
                     reasoning_effort=ORCHESTRATOR_REASONING_EFFORT,
                 )
+                prompt = retry_prompt
+                if call.ok or not _is_input_too_large(call):
+                    break
         if not call.ok:
             detail = _agent_call_failure_detail(call)
             raise RuntimeError(f"Orchestrator call {call.call_id} failed: {detail}")
@@ -966,12 +1028,24 @@ class SwarmOrchestrator:
                     str(action.get("system_prompt") or ""),
                 )
                 results.append({"action": "create_subagent", "name": spec.name})
+            elif atype in {"archive_subagent", "activate_subagent"}:
+                name = str(action.get("name") or "")
+                try:
+                    if atype == "archive_subagent":
+                        spec = self.archive_subagent(name)
+                    else:
+                        spec = self.activate_subagent(name)
+                    results.append({"action": atype, "name": spec.name})
+                except KeyError:
+                    results.append({"action": atype, "name": name, "error": f"Unknown subagent {name!r}."})
             elif atype == "assign_task":
                 agent_actions.append((atype, action))
             elif atype in _STANDARD_TASK_ACTIONS:
                 agent_actions.append((atype, action))
             elif atype in _TOOL_ACTIONS:
                 results.append(await self._run_tool(atype, action))
+            elif atype in _MEMORY_ACTIONS:
+                results.append(self.edit_global_facts(action, author=f"orchestrator:step-{step}"))
             elif atype == "finish":
                 finish = _valid_finish(action)
                 results.append({"action": "finish", "answer_preview": finish["answer"][:200]})
@@ -986,31 +1060,10 @@ class SwarmOrchestrator:
             output = await self.search(str(action.get("query") or ""))
         elif atype == "browse":
             output = await self.browse(str(action.get("url") or ""))
-        elif atype == "code":
+        else:
             output = await self.code(
                 str(action.get("instruction") or ""),
                 language=str(action.get("language") or "python"),
-            )
-        else:
-            ctx = self._require_context()
-            if not ctx.aristotle_advice_seen:
-                return {
-                    "action": atype,
-                    "output": {
-                        "ok": False,
-                        "error": (
-                            "Run Aristotle_advisor in an earlier step before calling aristotle. "
-                            "The advisor must read current Aristotle docs and recommend the call."
-                        ),
-                    },
-                }
-            output = await ctx.tools.aristotle(
-                str(action.get("prompt") or ""),
-                mode=str(action.get("mode") or "submit"),
-                project_dir=_optional_path(action.get("project_dir")),
-                source_path=_optional_path(action.get("source_path")),
-                destination=_optional_path(action.get("destination")),
-                wait=bool(action.get("wait") if action.get("wait") is not None else True),
             )
         return {"action": atype, "output": _trim_tool_output(output)}
 
@@ -1145,8 +1198,6 @@ class SwarmOrchestrator:
         except KeyError as exc:
             return {"action": atype, "task_id": task_id, "error": str(exc)}
         output = call.parsed if isinstance(call.parsed, dict) else {"content": call.content}
-        if atype == "Aristotle_advisor":
-            self._require_context().aristotle_advice_seen = True
         if node_id and isinstance(output, dict) and "node_id" not in output:
             output = {**output, "node_id": node_id}
         if graph_id and isinstance(output, dict) and "graph_id" not in output:
@@ -1322,8 +1373,6 @@ class SwarmOrchestrator:
                 transcript,
                 term=term,
             )
-        if atype == "Aristotle_advisor":
-            return aristotle_advisor_task_prompt(ctx.problem, task_id, prompt, transcript)
         raise KeyError(f"Unknown standard task action: {atype}")
 
     # -- Internals -----------------------------------------------------------
@@ -1356,12 +1405,10 @@ class SwarmOrchestrator:
                 run_dir=run_dir,
                 trace_path=trace_path,
                 mock=tools_mock,
-                aristotle_enabled=self.settings.aristotle_enabled,
-                aristotle_executable=self.settings.aristotle_executable,
-                aristotle_timeout_s=self.settings.aristotle_timeout_s,
                 codebase_dir=self.settings.codebase_dir,
                 save_code=self.settings.save_code,
             ),
+            fact_graph=GlobalFactGraph(run_dir),
         )
 
     def _load_registry_for_resume(
@@ -1375,11 +1422,16 @@ class SwarmOrchestrator:
         registry = SubagentRegistry(persist_path=path)
         for entry in transcript:
             for result in entry.get("results") or []:
-                if not isinstance(result, dict) or result.get("action") != "create_subagent":
+                if not isinstance(result, dict):
                     continue
+                action = result.get("action")
                 name = str(result.get("name") or "").strip()
-                if name and registry.get(name) is None:
+                if action == "create_subagent" and name and registry.get(name) is None:
                     registry.create_subagent(name, f"Resumed subagent {name}.")
+                elif action == "archive_subagent" and name and registry.get(name) is not None:
+                    registry.archive(name)
+                elif action == "activate_subagent" and name and registry.get(name) is not None:
+                    registry.activate(name)
         return registry
 
     def _restore_run_counters(self, ctx: _RunContext) -> None:
@@ -1396,6 +1448,101 @@ class SwarmOrchestrator:
         ctx.call_counter += 1
         return f"{safe_id(prefix)}-{ctx.call_counter:03d}"
 
+    def _shared_storage_prompt(self, *, schema_name: str) -> str:
+        ctx = self._require_context()
+        fact_view = ctx.fact_graph.prompt_view()
+        agent_view = agent_index_prompt_view(ctx.run_dir)
+        update_channel = (
+            "Emit fact_upsert/fact_delete/implication_upsert/implication_delete in your actions list."
+            if schema_name in {"orchestrator.schema.json", "agent_tools.schema.json"}
+            else (
+                "Always include a top-level memory_updates array using the edit objects below; "
+                "use [] when there is nothing to record."
+            )
+        )
+        return f"""<global_storage>
+This run has three shared storage areas:
+1. Compact log transcript: {ctx.run_dir / "transcript.json"}
+2. Detailed agent files and canonical outputs: {ctx.agents_dir} (index below)
+3. Collaboratively maintained true facts and implication graph: {ctx.fact_graph.graph_path}
+
+All math agents and the orchestrator may read the fact graph and may edit it through declared
+updates. Treat its current contents as established run knowledge, but correct or delete an entry
+if you find it false. Every edit is validated and appended to the graph history. Do not edit the
+graph JSON directly. {update_channel}
+
+Edit object shapes:
+- fact_upsert: type, fact_id (nullable for generated id), fact_kind
+  (hypothesis|definition|derived|external), statement, justification
+- fact_delete: type, fact_id, reason
+- implication_upsert: type, implication_id (nullable for generated id), premise_fact_ids,
+  conclusion_fact_id, justification
+- implication_delete: type, implication_id, reason
+
+Use the agent output paths in the index when a compact transcript summary is insufficient.
+<agent_file_index>
+{json.dumps(agent_view, indent=2, ensure_ascii=False, default=str)}
+</agent_file_index>
+<true_facts_and_implications>
+{json.dumps(fact_view, indent=2, ensure_ascii=False, default=str)}
+</true_facts_and_implications>
+</global_storage>
+
+"""
+
+    def _persist_agent_call(self, result: AgentCallResult, *, receipts: list[dict[str, Any]] | None = None) -> None:
+        ctx = self._require_context()
+        result.workspace.mkdir(parents=True, exist_ok=True)
+        output = result.parsed if isinstance(result.parsed, dict) else {"content": result.content}
+        output_path = result.workspace / "output.json"
+        write_json(output_path, output)
+        prompt_path = result.workspace / "prompt.md"
+        response_path = result.workspace / "response.md"
+        parsed_path = result.workspace / "parsed.json"
+        if not prompt_path.exists():
+            prompt_path.write_text(result.prompt, encoding="utf-8")
+        if not response_path.exists():
+            response_path.write_text(result.content, encoding="utf-8")
+        if not parsed_path.exists() and isinstance(result.parsed, dict):
+            write_json(parsed_path, result.parsed)
+        if receipts:
+            write_json(result.workspace / "global_fact_updates.json", receipts)
+        update_agent_index(
+            ctx.run_dir,
+            {
+                "call_id": result.call_id,
+                "role": result.role,
+                "workspace": str(result.workspace.resolve()),
+                "prompt_file": str(prompt_path.resolve()),
+                "output_file": str(output_path.resolve()),
+                "response_file": str(response_path.resolve()),
+                "ok": result.ok,
+                "output_summary": _compact_agent_output(output, max_chars=1_800),
+                "model_used": result.model_used,
+                "finished_at": result.finished_at or utc_now(),
+            },
+        )
+
+    def _model_menu(self) -> str:
+        """Tell the orchestrator about non-default models when routing is active."""
+
+        if not isinstance(self.backend, ModelRoutingBackend):
+            return ""
+        if not any(prefix.startswith("claude") for prefix in self.backend.routes):
+            return ""
+        return (
+            '- Claude workers are also available: set model="claude-sonnet-5" on any assign_task or\n'
+            "  standard-task action. Claude calls default to reasoning_effort=\"medium\" when you\n"
+            "  omit it. GPT workers default to high reasoning.\n"
+            '- Reserve reasoning_effort="max" (with claude-sonnet-5) for the same class of genuinely\n'
+            '  difficult mathematical reasoning that warrants the highest effort on GPT. Valid Claude\n'
+            '  efforts are low, medium, high, xhigh, max; "ultra" is accepted and treated as "max".\n'
+            "- Prefer a Claude worker when you want a genuinely independent second opinion: an\n"
+            "  adversarial critiquer, or a parallel prover on a lemma the default model keeps\n"
+            "  failing. A different model family fails differently, so agreement between the two is\n"
+            "  stronger evidence than either alone. Omit model to keep the configured GPT model.\n"
+        )
+
     async def _call(
         self,
         *,
@@ -1409,6 +1556,7 @@ class SwarmOrchestrator:
         reasoning_effort: str | None = None,
         timeout_s: int | None = None,
     ) -> AgentCallResult:
+        prompt = self._shared_storage_prompt(schema_name=schema_name) + prompt
         if self.settings.codebase_dir is not None:
             saved_code_dir = self._require_context().tools.saved_code_dir
             code_note = (
@@ -1436,6 +1584,12 @@ class SwarmOrchestrator:
             model=model,
             reasoning_effort=reasoning_effort,
         )
+        receipts: list[dict[str, Any]] = []
+        if role != "orchestrator":
+            author = f"{role}:{call_id}"
+            for update in memory_updates_from_response(result.parsed):
+                receipts.append(self.edit_global_facts(update, author=author))
+        self._persist_agent_call(result, receipts=receipts)
         append_jsonl(trace_path, {"type": "agent.end", **result.to_trace_json(), "at": utc_now()})
         return result
 
@@ -1451,14 +1605,11 @@ def settings_from_config(output_dir: Path, workflow_config: dict[str, Any], **ov
     max_parallel = int(overrides.get("max_parallel") or workflow_config.get("max_parallel") or 30)
     max_steps = int(overrides.get("max_steps") or workflow_config.get("max_steps") or 40)
     max_runtime_minutes = int(
-        overrides.get("max_runtime_minutes") or workflow_config.get("max_runtime_minutes") or 600
+        overrides.get("max_runtime_minutes") or workflow_config.get("max_runtime_minutes") or 1200
     )
-    agent_timeout_s = int(overrides.get("agent_timeout_s") or workflow_config.get("agent_timeout_s") or 3000)
+    agent_timeout_s = int(overrides.get("agent_timeout_s") or workflow_config.get("agent_timeout_s") or 7200)
     assign_task_timeout_s = int(
-        overrides.get("assign_task_timeout_s") or workflow_config.get("assign_task_timeout_s") or 6000
-    )
-    aristotle_timeout_s = int(
-        overrides.get("aristotle_timeout_s") or workflow_config.get("aristotle_timeout_s") or 8 * 60 * 60
+        overrides.get("assign_task_timeout_s") or workflow_config.get("assign_task_timeout_s") or 7200
     )
     return SwarmSettings(
         output_dir=output_dir,
@@ -1469,11 +1620,6 @@ def settings_from_config(output_dir: Path, workflow_config: dict[str, Any], **ov
         agent_timeout_s=agent_timeout_s,
         assign_task_timeout_s=assign_task_timeout_s,
         run_id=overrides.get("run_id"),
-        aristotle_enabled=bool(overrides.get("aristotle_enabled") or workflow_config.get("aristotle_enabled")),
-        aristotle_executable=str(
-            overrides.get("aristotle_executable") or workflow_config.get("aristotle_executable") or "aristotle"
-        ),
-        aristotle_timeout_s=aristotle_timeout_s,
         codebase_dir=overrides.get("codebase_dir"),
         save_code=bool(overrides.get("save_code") or workflow_config.get("save_code")),
     )
@@ -1567,6 +1713,9 @@ def _rebuild_step_results(run_dir: Path, actions: list[dict[str, Any]], step: in
         if atype == "create_subagent":
             name = safe_id(str(action.get("name") or "subagent"), fallback="subagent")
             results.append({"action": "create_subagent", "name": name})
+        elif atype in {"archive_subagent", "activate_subagent"}:
+            name = safe_id(str(action.get("name") or "subagent"), fallback="subagent")
+            results.append({"action": atype, "name": name})
         elif atype == "assign_task":
             agent_index += 1
             task_id = safe_id(str(action.get("task_id") or f"task-{agent_index}"), fallback=f"task-{agent_index}")
@@ -1582,6 +1731,15 @@ def _rebuild_step_results(run_dir: Path, actions: list[dict[str, Any]], step: in
             results.append(result)
         elif atype in _TOOL_ACTIONS:
             results.append(_rebuild_tool_result(atype, action, run_dir))
+        elif atype in _MEMORY_ACTIONS:
+            identity_key = "fact_id" if atype.startswith("fact_") else "implication_id"
+            results.append(
+                {
+                    "action": atype,
+                    identity_key: action.get(identity_key),
+                    "replayed_from_global_facts_history": True,
+                }
+            )
         elif atype == "finish":
             finish = _valid_finish(action)
             results.append({"action": "finish", "answer_preview": finish["answer"][:200]})
@@ -1596,20 +1754,23 @@ def _rebuild_agent_result(
     agent: str,
     task_id: str,
 ) -> dict[str, Any]:
+    output_path = run_dir / "agents" / call_id / "output.json"
     parsed_path = run_dir / "agents" / call_id / "parsed.json"
-    if not parsed_path.exists():
+    source_path = output_path if output_path.exists() else parsed_path
+    if not source_path.exists():
         raise FileNotFoundError(
             f"Cannot rebuild step result for {call_id}: missing {parsed_path}. "
             "Wait for that agent to finish, or resume from an earlier completed step."
         )
-    parsed = read_json(parsed_path)
+    parsed = read_json(source_path)
     output = parsed if isinstance(parsed, dict) else {"content": parsed}
     return {
         "action": action,
         "agent": agent,
         "task_id": task_id,
         "call_id": call_id,
-        "output": output,
+        "output_file": str(source_path.resolve()),
+        "output_summary": _compact_agent_output(output, max_chars=1_800),
     }
 
 
@@ -1623,7 +1784,6 @@ def _rebuild_tool_result(atype: str, action: dict[str, Any], run_dir: Path) -> d
         "search": "query",
         "browse": "url",
         "code": "instruction",
-        "aristotle": "prompt",
     }.get(atype)
     needle = str(action.get(needle_key) or "") if needle_key else ""
     matches: list[Path] = []
@@ -1646,14 +1806,6 @@ def _rebuild_tool_result(atype: str, action: dict[str, Any], run_dir: Path) -> d
     if not isinstance(output, dict):
         output = artifact if isinstance(artifact, dict) else {"content": artifact}
     return {"action": atype, "output": _trim_tool_output(output)}
-
-
-def _transcript_saw_aristotle_advisor(transcript: list[dict[str, Any]]) -> bool:
-    for entry in transcript:
-        for result in entry.get("results") or []:
-            if isinstance(result, dict) and result.get("action") == "Aristotle_advisor":
-                return True
-    return False
 
 
 def _max_suffix_counter(agents_dir: Path) -> int:
@@ -1687,11 +1839,6 @@ def _role_description(workflow: dict[str, Any], key: str) -> str:
     return ""
 
 
-def _optional_path(value: Any) -> Path | None:
-    text = str(value or "").strip()
-    return Path(text).expanduser() if text else None
-
-
 def _optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -1706,15 +1853,19 @@ def _agent_result_entry(
     call: AgentCallResult,
     output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a transcript result that includes which model actually ran the call."""
+    """Build a compact transcript entry that points to the canonical agent output."""
+    detailed_output = output if output is not None else (
+        call.parsed if isinstance(call.parsed, dict) else {"content": call.content}
+    )
+    output_path = call.workspace / "output.json"
+    write_json(output_path, detailed_output)
     entry: dict[str, Any] = {
         "action": action,
         "agent": agent,
         "task_id": task_id,
         "call_id": call_id,
-        "output": output if output is not None else (
-            call.parsed if isinstance(call.parsed, dict) else {"content": call.content}
-        ),
+        "output_file": str(output_path.resolve()),
+        "output_summary": _compact_agent_output(detailed_output, max_chars=1_800),
         **call.model_metadata(),
     }
     if not call.ok:
@@ -1808,6 +1959,56 @@ def _compact_orchestrator_transcript(
         "recent_steps_preserved": len(recent),
         "older_context_chars_before": _context_chars(older),
         "older_context_chars_after": _context_chars(compacted_older),
+        "full_transcript_path": str(run_dir / "transcript.json"),
+    }
+
+
+def _compact_orchestrator_transcript_fully(
+    transcript: list[dict[str, Any]],
+    *,
+    run_dir: Path,
+    max_total_chars: int = ORCHESTRATOR_OLDER_CONTEXT_MAX_CHARS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Compact every transcript step when even partial retention exceeds the input limit."""
+
+    if not transcript:
+        return [], {
+            "older_steps_condensed": 0,
+            "recent_steps_preserved": 0,
+            "older_context_chars_before": 0,
+            "older_context_chars_after": 0,
+        }
+
+    max_total_chars = max(4_000, max_total_chars)
+    per_step_budget = max(800, max_total_chars // len(transcript) - 32)
+    compacted = [
+        _compact_old_orchestrator_step(entry, max_chars=per_step_budget, run_dir=run_dir)
+        for entry in transcript
+    ]
+    if _context_chars(compacted) > max_total_chars:
+        compacted = [
+            _index_old_orchestrator_step(entry, max_chars=per_step_budget, run_dir=run_dir)
+            for entry in transcript
+        ]
+
+    step_numbers = [entry.get("step") for entry in transcript]
+    marker = {
+        "context_compaction": {
+            "reason": "The original orchestrator prompt exceeded the backend input limit.",
+            "all_steps_condensed": step_numbers,
+            "full_transcript_path": str(run_dir / "transcript.json"),
+            "note": (
+                "Every prior step was condensed to fit the orchestrator input limit. Consult the "
+                "full transcript or listed agent artifacts when exact older details are necessary."
+            ),
+        }
+    }
+    compacted_with_marker = [marker, *compacted]
+    return compacted_with_marker, {
+        "older_steps_condensed": len(transcript),
+        "recent_steps_preserved": 0,
+        "older_context_chars_before": _context_chars(transcript),
+        "older_context_chars_after": _context_chars(compacted),
         "full_transcript_path": str(run_dir / "transcript.json"),
     }
 
@@ -2039,7 +2240,7 @@ def _fallback_finish(transcript: list[dict[str, Any]]) -> dict[str, Any]:
     answer = ""
     for entry in reversed(transcript):
         for result in entry.get("results", []):
-            output = result.get("output")
+            output = _load_result_output(result)
             if isinstance(output, dict):
                 fragment = output.get("answer_fragment") or output.get("latex_document") or output.get("answer")
                 if fragment:
@@ -2054,6 +2255,23 @@ def _fallback_finish(transcript: list[dict[str, Any]]) -> dict[str, Any]:
         "caveats": ["Automatic fallback answer assembled from the last subagent output."],
         "sources": [],
     }
+
+
+def _load_result_output(result: dict[str, Any]) -> dict[str, Any] | None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        return output
+    for key in ("output_file", "full_output_artifact"):
+        path_value = result.get(key)
+        if not isinstance(path_value, str) or not path_value:
+            continue
+        try:
+            raw = read_json(Path(path_value))
+        except (OSError, ValueError):
+            continue
+        if isinstance(raw, dict):
+            return raw
+    return None
 
 
 def _looks_like_latex_document(text: str) -> bool:

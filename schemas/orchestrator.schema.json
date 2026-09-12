@@ -22,11 +22,6 @@
           "statement",
           "proof",
           "term",
-          "mode",
-          "project_dir",
-          "source_path",
-          "destination",
-          "wait",
           "prompt",
           "query",
           "url",
@@ -38,13 +33,22 @@
           "model",
           "reasoning_effort",
           "caveats",
-          "sources"
+          "sources",
+          "fact_id",
+          "fact_kind",
+          "justification",
+          "implication_id",
+          "premise_fact_ids",
+          "conclusion_fact_id",
+          "reason"
         ],
         "properties": {
           "type": {
             "type": "string",
             "enum": [
               "create_subagent",
+              "archive_subagent",
+              "activate_subagent",
               "assign_task",
               "proof_writer",
               "final_proof_writer",
@@ -55,11 +59,13 @@
               "final_critiquer",
               "term_definer",
               "counterexample_finder",
-              "Aristotle_advisor",
               "search",
               "browse",
               "code",
-              "aristotle",
+              "fact_upsert",
+              "fact_delete",
+              "implication_upsert",
+              "implication_delete",
               "finish"
             ]
           },
@@ -89,22 +95,6 @@
           },
           "term": {
             "type": ["string", "null"]
-          },
-          "mode": {
-            "type": ["string", "null"],
-            "enum": ["submit", "formalize", null]
-          },
-          "project_dir": {
-            "type": ["string", "null"]
-          },
-          "source_path": {
-            "type": ["string", "null"]
-          },
-          "destination": {
-            "type": ["string", "null"]
-          },
-          "wait": {
-            "type": ["boolean", "null"]
           },
           "prompt": {
             "type": ["string", "null"]
@@ -151,6 +141,31 @@
             "items": {
               "type": "string"
             }
+          },
+          "fact_id": {
+            "type": ["string", "null"]
+          },
+          "fact_kind": {
+            "type": ["string", "null"],
+            "enum": ["hypothesis", "definition", "derived", "external", null]
+          },
+          "justification": {
+            "type": ["string", "null"]
+          },
+          "implication_id": {
+            "type": ["string", "null"]
+          },
+          "premise_fact_ids": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string"
+            }
+          },
+          "conclusion_fact_id": {
+            "type": ["string", "null"]
+          },
+          "reason": {
+            "type": ["string", "null"]
           }
         }
       }

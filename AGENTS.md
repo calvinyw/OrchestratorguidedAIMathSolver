@@ -28,10 +28,14 @@ exposes these commands:
 - `browse(url)` — fetch a page
 - `code(instruction, language?)` — run a short snippet (`python`, `sage`, or `macaulay2`); normally
   saved in the run workspace, or under the selected codebase when `--save-code` is enabled
-- `Aristotle_advisor(prompt, task_id?)` — read current Harmonic Aristotle docs and recommend whether/how to call Aristotle for Lean formalization or sorry filling; this must run before `aristotle`
-- `aristotle(prompt, mode?, project_dir?, source_path?, destination?, wait?)` — optionally call the Aristotle CLI for long-running Lean formalization or sorry filling after advisor approval
 - `create_subagent(name, system_prompt)` — spin up a specialized subagent on demand (persisted to `subagents.json`)
+- `archive_subagent(name)` / `activate_subagent(name)` — remove or restore a specialist's full
+  definition from the orchestrator's active context without deleting it from `subagents.json`
 - `assign_task(agent, prompt)` — delegate work to a subagent it created (parallel within a step)
+- `fact_upsert(fact_id?, fact_kind, statement, justification)` / `fact_delete(fact_id, reason)` —
+  create, revise, or remove nodes in the shared true-facts graph
+- `implication_upsert(implication_id?, premise_fact_ids, conclusion_fact_id, justification)` /
+  `implication_delete(implication_id, reason)` — create, revise, or remove implication edges
 - `Graph_builder(prompt, task_id?)` — build one or more ProofFlow-style directed acyclic graphs of statements to prove (alternative approaches when useful); each node may use only the statements with arrows pointing into it as inputs
 - `lemma_prover(prompt, task_id?, graph_id?, node_id?)` — prove one lemma or conclusion node from a chosen Graph_builder DAG; parallelize independent lemma nodes across actions in the same step
 - `proof_writer(statement, prompt?, task_id?)` — ask the standard proof writer to prove the given statement in LaTeX
@@ -44,8 +48,9 @@ exposes these commands:
 The orchestrator decides the whole workflow: which subagents to spawn, how to decompose the
 problem, whether to build a proof DAG, which standard task agents to invoke, what to run in
 parallel, and when to finish.
-Per-run artifacts include
-`orchestrator_step_NN.json` (each decision) and `transcript.json` (actions + results;
-checkpointed after every step so interrupted runs can resume).
+Per-run global storage is split into `transcript.json` (a compact action log with summaries and
+output pointers), `agents/` (complete per-call files plus `agents/index.json`), and `global_facts/`
+(the editable fact/implication graph, audit history, and step checkpoints). Per-step decisions are
+also retained as `orchestrator_step_NN.json`.
 `max_steps` (config or `--max-steps`) and `max_runtime_minutes` (config or `--max-runtime-minutes`) bound the loop.
 Resume with `--run-dir` + `--resume-from-step N` to keep steps `< N` and continue the decision loop from step `N`.

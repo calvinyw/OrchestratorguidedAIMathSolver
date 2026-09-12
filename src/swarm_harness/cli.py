@@ -4,9 +4,15 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from swarm_harness.claude_cli import (
+    DEFAULT_CLAUDE_FALLBACK_MODELS,
+    ClaudeCLIBackend,
+    ClaudeCLIConfig,
+)
 from swarm_harness.codex_cli import (
     DEFAULT_CAPACITY_FALLBACK_MODELS,
     CodexCLIBackend,
@@ -16,13 +22,17 @@ from swarm_harness.codex_cli import (
 from swarm_harness.harness_io import read_problems, write_batch_outputs
 from swarm_harness.orchestrator import SwarmOrchestrator, load_workflow_config, settings_from_config
 from swarm_harness.records import Problem
+from swarm_harness.routing import ModelRoutingBackend
 from swarm_harness.util import safe_id
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WORKFLOW = REPO_ROOT / "configs" / "workflows" / "math_swarm.json"
-DEFAULT_MODEL = "gpt-5.6-sol"
-DEFAULT_REASONING_EFFORT = "medium"
+DEFAULT_MODEL = "gpt-6-astra"
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
+DEFAULT_CLAUDE_EFFORT = "medium"
+DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_CODEBASE = Path("/Users/calvinyost-wolff/Documents/GitHub/cross-ratio-degrees")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,7 +110,11 @@ def add_common_args(parser: argparse.ArgumentParser, *, include_output: bool) ->
     parser.add_argument("--workflow", type=Path, default=DEFAULT_WORKFLOW)
     if include_output:
         parser.add_argument("--output", "--output-dir", dest="output", type=Path, default=Path("outputs"))
-    parser.add_argument("--backend", choices=["codex", "mock"], default=os.environ.get("SWARM_BACKEND") or "codex")
+    parser.add_argument(
+        "--backend",
+        choices=["codex", "claude", "mock"],
+        default=os.environ.get("SWARM_BACKEND") or "codex",
+    )
     parser.add_argument("--model", default=os.environ.get("CODEX_SWARM_MODEL") or DEFAULT_MODEL)
     parser.add_argument(
         "--reasoning-effort",
@@ -119,10 +133,30 @@ def add_common_args(parser: argparse.ArgumentParser, *, include_output: bool) ->
     )
     parser.add_argument("--codex-sandbox", default=os.environ.get("CODEX_SWARM_SANDBOX") or "read-only")
     parser.add_argument("--codex-executable", default=os.environ.get("CODEX_SWARM_EXECUTABLE") or "codex")
+    parser.add_argument("--claude-executable", default=os.environ.get("CLAUDE_SWARM_EXECUTABLE") or "claude")
+    parser.add_argument(
+        "--claude-models",
+        action="store_true",
+        default=_env_flag("SWARM_CLAUDE_MODELS"),
+        help=(
+            "Let the orchestrator route individual worker calls to Claude by setting "
+            f"model=\"{DEFAULT_CLAUDE_MODEL}\" on an action. Claude workers default to "
+            f"reasoning effort {DEFAULT_CLAUDE_EFFORT}. Ignored when --backend is already claude."
+        ),
+    )
+    parser.add_argument(
+        "--claude-bare",
+        action="store_true",
+        default=_env_flag("CLAUDE_SWARM_BARE"),
+        help=(
+            "Run Claude workers with --bare. Requires ANTHROPIC_API_KEY: --bare never reads "
+            "OAuth or keychain credentials, so subscription logins will fail."
+        ),
+    )
     parser.add_argument(
         "--codebase",
         type=Path,
-        default=_default_codebase_from_env(),
+        default=Path(os.environ.get("CODEX_SWARM_CODEBASE") or DEFAULT_CODEBASE),
         help="Optional local repository available to agents and used as the working directory for code checks.",
     )
     parser.add_argument(
@@ -133,19 +167,6 @@ def add_common_args(parser: argparse.ArgumentParser, *, include_output: bool) ->
             "Save code(...) scripts under <codebase>/swarm_code/<run-id>/ instead of only "
             "under the run artifacts. Requires --codebase (or CODEX_SWARM_CODEBASE)."
         ),
-    )
-    parser.add_argument(
-        "--enable-aristotle",
-        action="store_true",
-        default=_env_flag("SWARM_ENABLE_ARISTOTLE"),
-        help="Enable optional Harmonic Aristotle CLI calls. Requires aristotlelib and ARISTOTLE_API_KEY.",
-    )
-    parser.add_argument("--aristotle-executable", default=os.environ.get("ARISTOTLE_EXECUTABLE") or "aristotle")
-    parser.add_argument(
-        "--aristotle-timeout-s",
-        type=int,
-        default=int(os.environ.get("ARISTOTLE_TIMEOUT_S") or str(8 * 60 * 60)),
-        help="Timeout for one Aristotle CLI call. Defaults to 8 hours because formalization can be slow.",
     )
     parser.add_argument("--max-parallel", type=int)
     parser.add_argument("--max-steps", type=int)
@@ -228,19 +249,24 @@ def build_orchestrator(args: argparse.Namespace) -> SwarmOrchestrator:
         max_runtime_minutes=args.max_runtime_minutes,
         agent_timeout_s=args.agent_timeout_s,
         assign_task_timeout_s=args.assign_task_timeout_s,
-        aristotle_enabled=args.enable_aristotle,
-        aristotle_executable=args.aristotle_executable,
-        aristotle_timeout_s=args.aristotle_timeout_s,
         codebase_dir=codebase,
         save_code=save_code,
     )
     return SwarmOrchestrator(backend, settings)
 
 
-def build_backend(args: argparse.Namespace) -> CodexCLIBackend | MockBackend:
+def build_backend(
+    args: argparse.Namespace,
+) -> CodexCLIBackend | ClaudeCLIBackend | ModelRoutingBackend | MockBackend:
     if args.backend == "mock":
         return MockBackend()
-    return CodexCLIBackend(
+    if args.backend == "claude":
+        backend = _build_claude_backend(args, model=_claude_model(args))
+        # Honour an explicit --reasoning-effort; the helper's default is Claude-specific.
+        if args.reasoning_effort and args.reasoning_effort != DEFAULT_REASONING_EFFORT:
+            backend.config = replace(backend.config, reasoning_effort=args.reasoning_effort)
+        return backend
+    codex_backend = CodexCLIBackend(
         CodexCLIConfig(
             executable=args.codex_executable,
             model=args.model,
@@ -250,6 +276,44 @@ def build_backend(args: argparse.Namespace) -> CodexCLIBackend | MockBackend:
             capacity_fallback_models=_capacity_fallback_models(args),
         )
     )
+    if not getattr(args, "claude_models", False):
+        return codex_backend
+    return ModelRoutingBackend(
+        codex_backend,
+        {"claude": _build_claude_backend(args, model=DEFAULT_CLAUDE_MODEL)},
+    )
+
+
+def _build_claude_backend(args: argparse.Namespace, *, model: str) -> ClaudeCLIBackend:
+    return ClaudeCLIBackend(
+        ClaudeCLIConfig(
+            executable=args.claude_executable,
+            model=model,
+            reasoning_effort=DEFAULT_CLAUDE_EFFORT,
+            sandbox=args.codex_sandbox,
+            bare=bool(getattr(args, "claude_bare", False)),
+            extra_args=("--add-dir", str(_resolve_codebase(args.codebase))) if args.codebase else (),
+            fallback_models=_claude_fallback_models(args),
+        )
+    )
+
+
+def _claude_model(args: argparse.Namespace) -> str:
+    """--model defaults to a Codex model, so fall back to a Claude one when unset."""
+
+    if args.model and args.model != DEFAULT_MODEL:
+        return args.model
+    return os.environ.get("CLAUDE_SWARM_MODEL") or DEFAULT_CLAUDE_MODEL
+
+
+def _claude_fallback_models(args: argparse.Namespace) -> tuple[str, ...]:
+    explicit = getattr(args, "capacity_fallback_models", None)
+    if explicit:
+        return tuple(model for model in explicit if str(model).strip())
+    env_value = os.environ.get("CLAUDE_SWARM_FALLBACK_MODELS")
+    if env_value is not None:
+        return tuple(part.strip() for part in env_value.split(",") if part.strip())
+    return DEFAULT_CLAUDE_FALLBACK_MODELS
 
 
 def _capacity_fallback_models(args: argparse.Namespace) -> tuple[str, ...]:
@@ -260,11 +324,6 @@ def _capacity_fallback_models(args: argparse.Namespace) -> tuple[str, ...]:
     if env_value is not None:
         return tuple(part.strip() for part in env_value.split(",") if part.strip())
     return DEFAULT_CAPACITY_FALLBACK_MODELS
-
-
-def _default_codebase_from_env() -> Path | None:
-    value = (os.environ.get("CODEX_SWARM_CODEBASE") or "").strip()
-    return Path(value) if value else None
 
 
 def _resolve_codebase(path: Path | None) -> Path | None:
